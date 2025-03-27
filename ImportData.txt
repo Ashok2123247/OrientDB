@@ -1,0 +1,293 @@
+# OrientDB Movie Database Sample Data and ETL Scripts
+
+Here's a complete set of CSV files and ETL scripts to import movie data into OrientDB, similar to the Neo4j movie database example.
+
+## CSV Files
+
+### 1. movies.csv
+```csv
+id,title,released,tagline
+1,"The Matrix",1999,"Welcome to the Real World"
+2,"The Matrix Reloaded",2003,"Free your mind"
+3,"The Matrix Revolutions",2003,"Everything that has a beginning has an end"
+4,"The Devil's Advocate",1997,"Evil has its winning ways"
+5,"A Few Good Men",1992,"In the heart of the nation's capital, in a courthouse of the U.S. government, one man will stop at nothing to keep his honor, and one will stop at nothing to find the truth."
+6,"Top Gun",1986,"I feel the need, the need for speed!"
+7,"Jerry Maguire",1996,"The rest of his life begins now."
+8,"Stand By Me",1986,"For some, it's the last real taste of innocence, and the first real taste of life. But for everyone, it's the time that memories are made of."
+9,"As Good as It Gets",1997,"A comedy from the heart that goes for the throat."
+10,"What Dreams May Come",1998,"After life there is more. The end is just the beginning."
+```
+
+### 2. actors.csv
+```csv
+id,name,born
+1,"Keanu Reeves",1964
+2,"Laurence Fishburne",1961
+3,"Carrie-Anne Moss",1967
+4,"Hugo Weaving",1960
+5,"Al Pacino",1940
+6,"Tom Cruise",1962
+7,"Jack Nicholson",1937
+8,"Demi Moore",1962
+9,"Kevin Bacon",1958
+10,"Kiefer Sutherland",1966
+11,"Noah Wyle",1971
+12,"Cuba Gooding Jr.",1968
+13,"River Phoenix",1970
+14,"Wil Wheaton",1972
+15,"Robin Williams",1951
+16,"Helen Hunt",1963
+```
+
+### 3. directors.csv
+```csv
+id,name,born
+1,"Lana Wachowski",1965
+2,"Lilly Wachowski",1967
+3,"Taylor Hackford",1944
+4,"Rob Reiner",1947
+5,"James L. Brooks",1940
+6,"Vincent Ward",1956
+7,"Tony Scott",1944
+8,"Cameron Crowe",1957
+```
+
+### 4. genres.csv
+```csv
+id,name
+1,"Action"
+2,"Sci-Fi"
+3,"Drama"
+4,"Thriller"
+5,"Comedy"
+6,"Romance"
+7,"Fantasy"
+8,"Adventure"
+```
+
+### 5. roles.csv
+```csv
+actor_id,movie_id,role
+1,1,"Neo"
+2,1,"Morpheus"
+3,1,"Trinity"
+4,1,"Agent Smith"
+1,2,"Neo"
+2,2,"Morpheus"
+3,2,"Trinity"
+4,2,"Agent Smith"
+1,3,"Neo"
+2,3,"Morpheus"
+3,3,"Trinity"
+4,3,"Agent Smith"
+1,4,"Kevin Lomax"
+5,4,"John Milton"
+6,5,"Lt. Daniel Kaffee"
+7,5,"Col. Nathan R. Jessup"
+8,5,"Lt. Cdr. JoAnne Galloway"
+9,5,"Capt. Jack Ross"
+6,6,"Maverick"
+6,7,"Jerry Maguire"
+12,7,"Rod Tidwell"
+13,8,"Chris Chambers"
+14,8,"Gordie Lachance"
+7,9,"Melvin Udall"
+16,9,"Carol Connelly"
+15,10,"Chris Nielsen"
+```
+
+### 6. movie_genres.csv
+```csv
+movie_id,genre_id
+1,1
+1,2
+2,1
+2,2
+3,1
+3,2
+4,3
+4,4
+5,3
+6,1
+6,8
+7,3
+7,5
+8,3
+8,8
+9,3
+9,5
+9,6
+10,3
+10,7
+```
+
+## OrientDB ETL Script (import.json)
+
+```json
+{
+  "config": {
+    "log": "debug",
+    "fileDirectory": "/path/to/csv/files",
+    "parallel": true
+  },
+  "begin": [
+    {"let": {"name": "$moviesFile",  "value": "movies.csv"}},
+    {"let": {"name": "$actorsFile",  "value": "actors.csv"}},
+    {"let": {"name": "$directorsFile", "value": "directors.csv"}},
+    {"let": {"name": "$genresFile",  "value": "genres.csv"}},
+    {"let": {"name": "$rolesFile",   "value": "roles.csv"}},
+    {"let": {"name": "$movieGenresFile", "value": "movie_genres.csv"}}
+  ],
+  "source": {
+    "file": {
+      "path": "$moviesFile",
+      "header": true,
+      "separator": ","
+    }
+  },
+  "extractor": { "row": {} },
+  "transformers": [
+    { "merge": { "joinFieldName": "id", "lookup": "Movie.id" } },
+    { "vertex": { "class": "Movie" } }
+  ],
+  "loader": {
+    "orientdb": {
+      "dbURL": "plocal:/path/to/database",
+      "dbUser": "admin",
+      "dbPassword": "admin",
+      "dbAutoCreate": true,
+      "tx": false,
+      "batchCommit": 1000,
+      "dbType": "graph",
+      "classes": [
+        {"name": "Movie", "extends": "V"},
+        {"name": "Actor", "extends": "V"},
+        {"name": "Director", "extends": "V"},
+        {"name": "Genre", "extends": "V"},
+        {"name": "ACTED_IN", "extends": "E"},
+        {"name": "DIRECTED", "extends": "E"},
+        {"name": "HAS_GENRE", "extends": "E"}
+      ]
+    }
+  }
+}
+```
+
+## Import Commands
+
+1. First, create the database if it doesn't exist:
+```bash
+orientdb> CREATE DATABASE plocal:/path/to/database graph admin admin
+```
+
+2. Then run the ETL process for each CSV file (modify the import.json for each type):
+
+For movies:
+```bash
+oetl.sh /path/to/import-movies.json
+```
+
+For actors:
+```bash
+oetl.sh /path/to/import-actors.json
+```
+
+For directors:
+```bash
+oetl.sh /path/to/import-directors.json
+```
+
+For genres:
+```bash
+oetl.sh /path/to/import-genres.json
+```
+
+For relationships (you'll need separate ETL configs for each relationship type):
+
+Example for ACTED_IN relationships (roles.csv):
+```json
+{
+  "config": {
+    "log": "debug",
+    "fileDirectory": "/path/to/csv/files",
+    "parallel": true
+  },
+  "source": {
+    "file": {
+      "path": "roles.csv",
+      "header": true,
+      "separator": ","
+    }
+  },
+  "extractor": { "row": {} },
+  "transformers": [
+    {
+      "command": {
+        "command": "CREATE EDGE ACTED_IN FROM (SELECT FROM Actor WHERE id = ${input.actor_id}) TO (SELECT FROM Movie WHERE id = ${input.movie_id}) SET role = ${input.role}"
+      }
+    }
+  ],
+  "loader": {
+    "orientdb": {
+      "dbURL": "plocal:/path/to/database",
+      "dbUser": "admin",
+      "dbPassword": "admin"
+    }
+  }
+}
+```
+
+For HAS_GENRE relationships:
+```json
+{
+  "config": {
+    "log": "debug",
+    "fileDirectory": "/path/to/csv/files",
+    "parallel": true
+  },
+  "source": {
+    "file": {
+      "path": "movie_genres.csv",
+      "header": true,
+      "separator": ","
+    }
+  },
+  "extractor": { "row": {} },
+  "transformers": [
+    {
+      "command": {
+        "command": "CREATE EDGE HAS_GENRE FROM (SELECT FROM Movie WHERE id = ${input.movie_id}) TO (SELECT FROM Genre WHERE id = ${input.genre_id})"
+      }
+    }
+  ],
+  "loader": {
+    "orientdb": {
+      "dbURL": "plocal:/path/to/database",
+      "dbUser": "admin",
+      "dbPassword": "admin"
+    }
+  }
+}
+```
+
+## Sample Queries
+
+After importing, you can run queries like:
+
+1. Find all movies with Keanu Reeves:
+```sql
+SELECT expand(out('ACTED_IN')) FROM Actor WHERE name = 'Keanu Reeves'
+```
+
+2. Find all actors in The Matrix:
+```sql
+SELECT expand(in('ACTED_IN')) FROM Movie WHERE title = 'The Matrix'
+```
+
+3. Find all movies in the Sci-Fi genre:
+```sql
+SELECT expand(in('HAS_GENRE')) FROM Genre WHERE name = 'Sci-Fi'
+```
+
+This setup provides a complete movie database similar to Neo4j's example but for OrientDB, allowing you to test various scenarios.
