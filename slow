@@ -6,3 +6,14 @@
   grok_patterns = ['%{TIMESTAMP_ISO8601:timestamp} %{WORD:component} %{WORD} \[%{WORD:connection}\] %{GREEDYDATA:query_stats} %{WORD:operation} %{WORD:namespace} %{GREEDYDATA:query} %{NUMBER:query_time_ms:float}ms']
   name_override = "mongodb_slow_queries"
   grok_timezone = "UTC"
+
+
+SELECT count("query_time_ms") FROM "mongodb_slow_queries" WHERE $timeFilter GROUP BY time($__interval)
+SELECT top("query_time_ms", 10) FROM "mongodb_slow_queries" WHERE $timeFilter GROUP BY "query"
+SELECT count("query_time_ms") FROM "mongodb_slow_queries" WHERE $timeFilter GROUP BY "namespace"
+
+## test in mongodb
+db.collection.find({$where: "sleep(100) || true"})
+
+## for errors
+journalctl -u telegraf -f
