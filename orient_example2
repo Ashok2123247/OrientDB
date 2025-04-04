@@ -1,0 +1,253 @@
+For advanced ETL loading in **OrientDB**, let’s take a **social network** example with **complex relationships**. This will include:  
+
+- **Users (Persons)** with friendships  
+- **Companies** where users work  
+- **Projects** users work on  
+- **Relationships** such as `FRIENDS_WITH`, `WORKS_AT`, and `WORKS_ON`  
+
+---
+
+## **Step 1: Prepare Sample CSV Files**  
+
+### **1. Persons (`persons.csv`)**
+```csv
+id,name,age,email
+1,Alice,30,alice@example.com
+2,Bob,25,bob@example.com
+3,Charlie,35,charlie@example.com
+4,David,40,david@example.com
+```
+
+---
+
+### **2. Companies (`companies.csv`)**
+```csv
+id,name,industry
+101,TechCorp,Technology
+102,HealthInc,Healthcare
+103,FinBank,Finance
+```
+
+---
+
+### **3. Projects (`projects.csv`)**
+```csv
+id,name,domain
+201,AI Research,Artificial Intelligence
+202,FinTech App,Finance
+203,Health Tracker,Healthcare
+```
+
+---
+
+### **4. Friendships (`friendships.csv`)**
+```csv
+person1_id,person2_id,since
+1,2,2020
+1,3,2018
+2,4,2019
+3,4,2021
+```
+- This represents a `FRIENDS_WITH` relationship between users.  
+
+---
+
+### **5. Works at Company (`worksat.csv`)**
+```csv
+person_id,company_id,role
+1,101,Software Engineer
+2,101,UX Designer
+3,102,Doctor
+4,103,Bank Manager
+```
+- This represents `WORKS_AT` relationship from `Person` to `Company`.  
+
+---
+
+### **6. Works on Projects (`works_on.csv`)**
+```csv
+person_id,project_id,contribution
+1,201,AI Model Training
+1,202,Backend Development
+2,202,UI/UX Design
+3,203,Medical Data Analysis
+4,203,Finance Data Management
+```
+- This represents `WORKS_ON` relationship between `Person` and `Project`.
+
+---
+
+## **Step 2: Create ETL Scripts**
+
+### **1. Load Persons (`etl_persons.json`)**
+```json
+{
+  "config": {"log": "debug"},
+  "source": {"file": {"path": "persons.csv", "header": true}},
+  "extractor": {"csv": {}},
+  "transformers": [
+    {"vertex": {"class": "Person"}},
+    {"field": {"fieldNames": ["id"], "operation": "convert", "type": "INTEGER"}},
+    {"field": {"fieldNames": ["age"], "operation": "convert", "type": "INTEGER"}}
+  ],
+  "loader": {"orientdb": {"dbURL": "plocal:/databases/orientdb", "dbType": "graph", "classes": [{"name": "Person", "extends": "V"}]}}
+}
+```
+
+---
+
+### **2. Load Companies (`etl_companies.json`)**
+```json
+{
+  "config": {"log": "debug"},
+  "source": {"file": {"path": "companies.csv", "header": true}},
+  "extractor": {"csv": {}},
+  "transformers": [
+    {"vertex": {"class": "Company"}},
+    {"field": {"fieldNames": ["id"], "operation": "convert", "type": "INTEGER"}}
+  ],
+  "loader": {"orientdb": {"dbURL": "plocal:/databases/orientdb", "dbType": "graph", "classes": [{"name": "Company", "extends": "V"}]}}
+}
+```
+
+---
+
+### **3. Load Projects (`etl_projects.json`)**
+```json
+{
+  "config": {"log": "debug"},
+  "source": {"file": {"path": "projects.csv", "header": true}},
+  "extractor": {"csv": {}},
+  "transformers": [
+    {"vertex": {"class": "Project"}},
+    {"field": {"fieldNames": ["id"], "operation": "convert", "type": "INTEGER"}}
+  ],
+  "loader": {"orientdb": {"dbURL": "plocal:/databases/orientdb", "dbType": "graph", "classes": [{"name": "Project", "extends": "V"}]}}
+}
+```
+
+---
+
+### **4. Load Friendships (`etl_friendships.json`)**
+```json
+{
+  "config": {"log": "debug"},
+  "source": {"file": {"path": "friendships.csv", "header": true}},
+  "extractor": {"csv": {}},
+  "transformers": [
+    {
+      "edge": {
+        "class": "FRIENDS_WITH",
+        "joinFieldName": "person1_id",
+        "lookup": "Person.id"
+      }
+    },
+    {
+      "field": {
+        "fieldNames": ["person2_id"],
+        "operation": "link",
+        "destinationClass": "Person",
+        "destinationField": "id"
+      }
+    },
+    {"field": {"fieldNames": ["since"], "operation": "convert", "type": "INTEGER"}}
+  ],
+  "loader": {"orientdb": {"dbURL": "plocal:/databases/orientdb", "dbType": "graph", "classes": [{"name": "FRIENDS_WITH", "extends": "E"}]}}
+}
+```
+
+---
+
+### **5. Load Works At (`etl_worksat.json`)**
+```json
+{
+  "config": {"log": "debug"},
+  "source": {"file": {"path": "worksat.csv", "header": true}},
+  "extractor": {"csv": {}},
+  "transformers": [
+    {
+      "edge": {
+        "class": "WORKS_AT",
+        "joinFieldName": "person_id",
+        "lookup": "Person.id"
+      }
+    },
+    {
+      "field": {
+        "fieldNames": ["company_id"],
+        "operation": "link",
+        "destinationClass": "Company",
+        "destinationField": "id"
+      }
+    },
+    {"field": {"fieldNames": ["role"], "operation": "copy"}}
+  ],
+  "loader": {"orientdb": {"dbURL": "plocal:/databases/orientdb", "dbType": "graph", "classes": [{"name": "WORKS_AT", "extends": "E"}]}}
+}
+```
+
+---
+
+### **6. Load Works On (`etl_workson.json`)**
+```json
+{
+  "config": {"log": "debug"},
+  "source": {"file": {"path": "works_on.csv", "header": true}},
+  "extractor": {"csv": {}},
+  "transformers": [
+    {
+      "edge": {
+        "class": "WORKS_ON",
+        "joinFieldName": "person_id",
+        "lookup": "Person.id"
+      }
+    },
+    {
+      "field": {
+        "fieldNames": ["project_id"],
+        "operation": "link",
+        "destinationClass": "Project",
+        "destinationField": "id"
+      }
+    },
+    {"field": {"fieldNames": ["contribution"], "operation": "copy"}}
+  ],
+  "loader": {"orientdb": {"dbURL": "plocal:/databases/orientdb", "dbType": "graph", "classes": [{"name": "WORKS_ON", "extends": "E"}]}}
+}
+```
+
+---
+
+## **Step 3: Run ETL Commands**
+Execute each script one by one:
+
+```bash
+orientdb/bin/oetl.sh etl_persons.json
+orientdb/bin/oetl.sh etl_companies.json
+orientdb/bin/oetl.sh etl_projects.json
+orientdb/bin/oetl.sh etl_friendships.json
+orientdb/bin/oetl.sh etl_worksat.json
+orientdb/bin/oetl.sh etl_workson.json
+```
+
+---
+
+## **Step 4: Querying Complex Relationships**
+### **Find Alice’s Friends**
+```sql
+SELECT FROM (TRAVERSE out('FRIENDS_WITH') FROM (SELECT FROM Person WHERE name='Alice'))
+```
+
+### **Find Alice’s Company**
+```sql
+SELECT FROM (TRAVERSE out('WORKS_AT') FROM (SELECT FROM Person WHERE name='Alice'))
+```
+
+### **Find People Who Work on AI Research**
+```sql
+SELECT expand(in('WORKS_ON')) FROM Project WHERE name='AI Research'
+```
+
+---
+
+This setup builds a **real-world graph with multiple relationships** across **people, companies, projects, and friendships**. Let me know if you need further refinements! 🚀
