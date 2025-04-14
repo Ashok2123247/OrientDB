@@ -1,0 +1,34 @@
+import networkx as nx
+import pandas as pd
+
+# Load the GraphML file
+graphml_path = "movies.graphml"
+G = nx.read_graphml(graphml_path)
+
+# Extract nodes
+nodes_data = []
+for node, attrs in G.nodes(data=True):
+    node_entry = {"id": node}
+    node_entry.update(attrs)
+    nodes_data.append(node_entry)
+
+# Convert nodes to CSV
+nodes_df = pd.DataFrame(nodes_data)
+nodes_df.to_csv("nodes.csv", index=False)
+print("✅ nodes.csv written")
+
+# Extract edges
+edges_data = []
+for source, target, attrs in G.edges(data=True):
+    edge_entry = {
+        "source": source,
+        "target": target,
+        "label": attrs.get("label", "E")  # Default label if not present
+    }
+    edge_entry.update(attrs)
+    edges_data.append(edge_entry)
+
+# Convert edges to CSV
+edges_df = pd.DataFrame(edges_data)
+edges_df.to_csv("edges.csv", index=False)
+print("✅ edges.csv written")
