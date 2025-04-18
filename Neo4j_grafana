@@ -1,0 +1,196 @@
+# Installing Telegraf on CentOS to Collect Neo4j Metrics for InfluxDB and Grafana
+
+Here's a step-by-step guide to set up Telegraf to collect Neo4j metrics and send them to InfluxDB for visualization in Grafana.
+
+## Prerequisites
+- CentOS server
+- Neo4j installed and running
+- InfluxDB installed and accessible
+- Grafana installed and accessible
+
+## Step 1: Install Telegraf
+
+```bash
+# Add the InfluxData repository
+cat <<EOF | sudo tee /etc/yum.repos.d/influxdata.repo
+[influxdata]
+name = InfluxData Repository - Stable
+baseurl = https://repos.influxdata.com/stable/\$basearch/main
+enabled = 1
+gpgcheck = 1
+gpgkey = https://repos.influxdata.com/influxdata-archive_compat.key
+EOF
+
+# Install Telegraf
+sudo yum install -y telegraf
+
+# Start and enable Telegraf
+sudo systemctl start telegraf
+sudo systemctl enable telegraf
+```
+
+## Step 2: Configure Telegraf for Neo4j Metrics
+
+Edit the Telegraf configuration file:
+
+```bash
+sudo vi /etc/telegraf/telegraf.conf
+```
+
+Replace or add the following sections:
+
+### Global Configuration
+```
+[agent]
+  interval = "10s"
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  collection_jitter = "0s"
+  flush_interval = "10s"
+  flush_jitter = "0s"
+  precision = ""
+  debug = false
+  quiet = false
+  logfile = ""
+  hostname = "$HOSTNAME"
+  omit_hostname = false
+```
+
+### Neo4j Input Plugin
+```
+[[inputs.neo4j]]
+  ## URL of the Neo4j instance to monitor
+  url = "http://localhost:7474"
+
+  ## Credentials for basic HTTP authentication
+  username = "neo4j"
+  password = "your_neo4j_password"
+
+  ## Optional TLS Config
+  # tls_ca = "/etc/telegraf/ca.pem"
+  # tls_cert = "/etc/telegraf/cert.pem"
+  # tls_key = "/etc/telegraf/key.pem"
+  ## Use TLS but skip chain & host verification
+  # insecure_skip_verify = false
+
+  ## Monitor Neo4j via JMX
+  ## Requires Jolokia agent to be enabled in Neo4j
+  # jmx_url = "http://localhost:3637/jolokia/"
+
+  ## List of metrics to collect
+  # metrics = ["neo4j.*"]
+```
+
+### InfluxDB Output Plugin
+```
+[[outputs.influxdb]]
+  urls = ["http://your-influxdb-server:8086"]
+  database = "neo4j_metrics"
+  retention_policy = ""
+  write_consistency = "any"
+  timeout = "5s"
+  username = "your-influx-user"
+  password = "your-influx-password"
+```
+
+## Step 3: Enable Neo4j Metrics
+
+For Telegraf to collect metrics, you need to enable metrics in Neo4j:
+
+1. Edit your Neo4j configuration file (usually at `/etc/neo4j/neo4j.conf` or `/var/lib/neo4j/conf/neo4j.conf`)
+2. Add or uncomment these lines:
+```
+metrics.enabled=true
+metrics.csv.enabled=false
+metrics.jmx.enabled=true
+```
+
+3. Restart Neo4j:
+```bash
+sudo systemctl restart neo4j
+```
+
+## Step 4: Restart Telegraf
+
+```bash
+sudo systemctl restart telegraf
+```
+
+## Step 5: Verify Data is Being Collected
+
+Check Telegraf logs:
+```bash
+sudo tail -f /var/log/telegraf/telegraf.log
+```
+
+Check if data exists in InfluxDB:
+```bash
+# Connect to InfluxDB
+influx -host your-influxdb-server -port 8086 -username your-influx-user -password your-influx-password
+
+# Check databases
+SHOW DATABASES
+
+# Use the neo4j_metrics database
+USE neo4j_metrics
+
+# Show measurements
+SHOW MEASUREMENTS
+
+# Query some data
+SELECT * FROM neo4j LIMIT 10
+```
+
+## Step 6: Create Grafana Dashboard
+
+1. Log in to your Grafana instance
+2. Add InfluxDB as a data source:
+   - Name: InfluxDB-Neo4j
+   - Type: InfluxDB
+   - URL: http://your-influxdb-server:8086
+   - Database: neo4j_metrics
+   - User: your-influx-user
+   - Password: your-influx-password
+3. Create a new dashboard:
+   - Click "+" icon → Dashboard
+   - Add panels with Neo4j metrics queries
+
+## Recommended Neo4j Metrics to Monitor
+
+Here are some key metrics you might want to include in your dashboard:
+
+1. **Database Metrics**:
+   - `neo4j_store_size_bytes`
+   - `neo4j_ids_in_use`
+   - `neo4j_node_count`
+   - `neo4j_relationship_count`
+
+2. **Query Performance**:
+   - `neo4j_query_execution_time_seconds`
+   - `neo4j_query_execution_count`
+
+3. **Transaction Metrics**:
+   - `neo4j_transaction_active`
+   - `neo4j_transaction_committed`
+   - `neo4j_transaction_rolled_back`
+
+4. **Memory Metrics**:
+   - `neo4j_page_cache_hits`
+   - `neo4j_page_cache_misses`
+
+5. **System Metrics**:
+   - `neo4j_up` (to monitor if Neo4j is available)
+
+## Troubleshooting
+
+If metrics aren't appearing:
+1. Verify Neo4j metrics are enabled in neo4j.conf
+2. Check Telegraf logs for errors
+3. Test Neo4j metrics endpoint manually:
+   ```bash
+   curl -u neo4j:yourpassword http://localhost:7474/metrics
+   ```
+4. Ensure the Neo4j user has appropriate permissions to access metrics
+
+This setup will give you comprehensive monitoring of your Neo4j instance, allowing you to track performance, identify bottlenecks, and ensure the health of your graph database.
