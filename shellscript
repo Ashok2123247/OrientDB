@@ -1,0 +1,140 @@
+Here's a shell script version that connects to MongoDB, finds long-running queries, and generates an HTML report with the same styling:
+
+```bash
+#!/bin/bash
+
+# MongoDB Long-Running Queries Report Generator
+
+# Configuration
+MONGO_URI="mongodb://localhost:27017"  # Change this to your MongoDB connection string
+LONG_RUNNING_THRESHOLD=1000            # Threshold in milliseconds (1 second)
+OUTPUT_FILE="mongodb_long_running_queries.html"
+
+# JavaScript query to be executed in MongoDB
+JS_QUERY=$(cat <<EOF
+const longRunningOps = db.currentOp({
+  "active": true,
+  "secs_running": { "\$gt": $LONG_RUNNING_THRESHOLD / 1000 }
+});
+
+const opsArray = longRunningOps.inprog.map(op => ({
+  opid: op.opid,
+  secs_running: op.secs_running,
+  ns: op.ns || 'N/A',
+  op: op.op || 'N/A',
+  command: JSON.stringify(op.command || {}, null, 2),
+  client: op.client || 'N/A',
+  desc: op.desc || 'N/A'
+}));
+
+opsArray;
+EOF
+)
+
+# Execute query and get results
+echo "Querying MongoDB for long-running operations..."
+OPS_JSON=$(mongo "$MONGO_URI" --quiet --eval "$JS_QUERY")
+
+# Count the number of operations
+OPS_COUNT=$(echo "$OPS_JSON" | jq 'length')
+
+# Generate HTML report
+echo "Generating HTML report..."
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+cat > "$OUTPUT_FILE" <<EOF
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MongoDB Long-Running Queries Report</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      margin: 20px;
+      color: #333;
+    }
+    h1 {
+      color: #2c3e50;
+      border-bottom: 2px solid #3498db;
+      padding-bottom: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #3498db;
+      color: white;
+    }
+    tr:nth-child(even) {
+      background-color: #f2f2f2;
+    }
+    pre {
+      background-color: #f8f8f8;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+    .timestamp {
+      font-size: 0.9em;
+      color: #7f8c8d;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <h1>MongoDB Long-Running Queries Report</h1>
+  <div class="timestamp">Generated: $TIMESTAMP</div>
+  
+  <p>Threshold: $LONG_RUNNING_THRESHOLD ms</p>
+  <p>Found $OPS_COUNT long-running operations</p>
+  
+  <table>
+    <thead>
+      <tr>
+        <th>OP ID</th>
+        <th>Seconds Running</th>
+        <th>Namespace</th>
+        <th>Operation</th>
+        <th>Client</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+EOF
+
+# Add each operation to the table
+echo "$OPS_JSON" | jq -r '.[] | @html |
+  "<tr>
+    <td>\(.opid)</td>
+    <td>\(.secs_running | tostring | sub("\\.\\d+$"; "") + "." + (tostring | match("\\.(\\d+)").captures[0].string // "00") | .[0:5])</td>
+    <td>\(.ns)</td>
+    <td>\(.op)</td>
+    <td>\(.client)</td>
+    <td>\(.desc)</td>
+  </tr>
+  <tr>
+    <td colspan=\"6\">
+      <strong>Command:</strong>
+      <pre>\(.command)</pre>
+    </td>
+  </tr>"' >> "$OUTPUT_FILE"
+
+# Close HTML tags
+cat >> "$OUTPUT_FILE" <<EOF
+    </tbody>
+  </table>
+</body>
+</html>
+EOF
+
+echo "Report generated: $OUTPUT_FILE"
+
+
