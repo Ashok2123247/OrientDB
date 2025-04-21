@@ -1,0 +1,270 @@
+# MongoDB Slow Query Analyzer with HTML Email Report
+
+Here's a Python script that finds slow running queries in MongoDB and generates an HTML report that can be emailed. The script uses PyMongo to connect to MongoDB and the `smtplib`/`email` libraries for sending emails.
+
+```python
+import pymongo
+from pymongo import MongoClient
+from datetime import datetime, timedelta
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+def get_slow_queries(mongo_uri, db_name, threshold_ms, hours_back=24):
+    """
+    Retrieve slow queries from MongoDB profiler
+    :param mongo_uri: MongoDB connection URI
+    :param db_name: Database name to analyze
+    :param threshold_ms: Threshold in milliseconds to consider a query slow
+    :param hours_back: How many hours back to look for slow queries
+    :return: List of slow query documents
+    """
+    client = MongoClient(mongo_uri)
+    db = client[db_name]
+    
+    # Ensure profiling is enabled (level 1 logs slow operations, level 2 logs all)
+    profiling_level = db.command('profile', -1)
+    if profiling_level['was'] == 0:
+        print(f"Warning: Profiling is disabled for database {db_name}. Setting to level 1.")
+        db.command('profile', 1, slowms=threshold_ms)
+    
+    # Calculate time range
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(hours=hours_back)
+    
+    # Query the system.profile collection
+    slow_queries = db['system.profile'].find({
+        'millis': {'$gte': threshold_ms},
+        'ts': {'$gte': start_time, '$lte': end_time}
+    }).sort('millis', pymongo.DESCENDING)
+    
+    return list(slow_queries)
+
+def generate_html_report(slow_queries, threshold_ms, hours_back):
+    """
+    Generate HTML report from slow queries
+    :param slow_queries: List of slow query documents
+    :param threshold_ms: Threshold used to identify slow queries
+    :param hours_back: Time period analyzed
+    :return: HTML string
+    """
+    report_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total_slow_queries = len(slow_queries)
+    
+    # Start building HTML
+    html = f"""
+    <html>
+    <head>
+        <title>MongoDB Slow Query Report</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            h1 {{ color: #333366; }}
+            .summary {{ background-color: #f0f0f0; padding: 15px; border-radius: 5px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+            th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+            th {{ background-color: #333366; color: white; }}
+            tr:nth-child(even) {{ background-color: #f2f2f2; }}
+            .warning {{ color: #cc0000; font-weight: bold; }}
+        </style>
+    </head>
+    <body>
+        <h1>MongoDB Slow Query Report</h1>
+        <div class="summary">
+            <p><strong>Report generated:</strong> {report_date}</p>
+            <p><strong>Slow query threshold:</strong> {threshold_ms} ms</p>
+            <p><strong>Time period analyzed:</strong> Last {hours_back} hours</p>
+            <p><strong>Total slow queries found:</strong> {total_slow_queries}</p>
+        </div>
+    """
+    
+    if slow_queries:
+        html += """
+        <h2>Slow Query Details</h2>
+        <table>
+            <tr>
+                <th>Timestamp</th>
+                <th>Duration (ms)</th>
+                <th>Collection</th>
+                <th>Operation</th>
+                <th>Query</th>
+                <th>Plan Summary</th>
+            </tr>
+        """
+        
+        for query in slow_queries:
+            timestamp = query['ts'].strftime("%Y-%m-%d %H:%M:%S") if 'ts' in query else 'N/A'
+            duration = query.get('millis', 'N/A')
+            namespace = query.get('ns', 'N/A')
+            operation = query.get('op', 'N/A')
+            query_text = str(query.get('query', 'N/A'))
+            plan_summary = str(query.get('planSummary', 'N/A'))
+            
+            html += f"""
+            <tr>
+                <td>{timestamp}</td>
+                <td class="warning">{duration}</td>
+                <td>{namespace}</td>
+                <td>{operation}</td>
+                <td><pre>{query_text}</pre></td>
+                <td><pre>{plan_summary}</pre></td>
+            </tr>
+            """
+        
+        html += "</table>"
+    else:
+        html += "<p>No slow queries found during this period.</p>"
+    
+    html += """
+    </body>
+    </html>
+    """
+    
+    return html
+
+def send_email(html_report, email_settings):
+    """
+    Send HTML report via email
+    :param html_report: HTML content to send
+    :param email_settings: Dictionary with email settings
+    """
+    msg = MIMEMultipart()
+    msg['From'] = email_settings['from_email']
+    msg['To'] = email_settings['to_email']
+    msg['Subject'] = email_settings['subject']
+    
+    # Attach HTML content
+    msg.attach(MIMEText(html_report, 'html'))
+    
+    # Send email
+    try:
+        with smtplib.SMTP(email_settings['smtp_server'], email_settings['smtp_port']) as server:
+            if email_settings.get('smtp_username') and email_settings.get('smtp_password'):
+                server.starttls()
+                server.login(email_settings['smtp_username'], email_settings['smtp_password'])
+            server.send_message(msg)
+        print("Email sent successfully!")
+    except Exception as e:
+        print(f"Failed to send email: {str(e)}")
+
+def main():
+    # MongoDB configuration
+    mongo_uri = "mongodb://localhost:27017/"
+    db_name = "your_database"
+    threshold_ms = 100  # queries taking longer than 100ms
+    hours_back = 24     # analyze last 24 hours
+    
+    # Email configuration
+    email_settings = {
+        'from_email': 'monitoring@example.com',
+        'to_email': 'dba@example.com',
+        'subject': f'MongoDB Slow Query Report - {datetime.now().strftime("%Y-%m-%d")}',
+        'smtp_server': 'smtp.example.com',
+        'smtp_port': 587,
+        'smtp_username': 'your_username',
+        'smtp_password': 'your_password'
+    }
+    
+    # Get slow queries
+    slow_queries = get_slow_queries(mongo_uri, db_name, threshold_ms, hours_back)
+    
+    # Generate HTML report
+    html_report = generate_html_report(slow_queries, threshold_ms, hours_back)
+    
+    # Optionally save to file for debugging
+    with open('mongodb_slow_queries_report.html', 'w') as f:
+        f.write(html_report)
+    
+    # Send email
+    send_email(html_report, email_settings)
+
+if __name__ == "__main__":
+    main()
+```
+
+## Sample Output (HTML Report)
+
+Here's what the generated HTML report might look like:
+
+```html
+<html>
+<head>
+    <title>MongoDB Slow Query Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333366; }
+        .summary { background-color: #f0f0f0; padding: 15px; border-radius: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #333366; color: white; }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        .warning { color: #cc0000; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>MongoDB Slow Query Report</h1>
+    <div class="summary">
+        <p><strong>Report generated:</strong> 2023-11-15 14:30:00</p>
+        <p><strong>Slow query threshold:</strong> 100 ms</p>
+        <p><strong>Time period analyzed:</strong> Last 24 hours</p>
+        <p><strong>Total slow queries found:</strong> 3</p>
+    </div>
+    <h2>Slow Query Details</h2>
+    <table>
+        <tr>
+            <th>Timestamp</th>
+            <th>Duration (ms)</th>
+            <th>Collection</th>
+            <th>Operation</th>
+            <th>Query</th>
+            <th>Plan Summary</th>
+        </tr>
+        <tr>
+            <td>2023-11-15 13:45:22</td>
+            <td class="warning">1250</td>
+            <td>ecommerce.orders</td>
+            <td>find</td>
+            <td><pre>{"customer_id": "12345", "status": "pending"}</pre></td>
+            <td><pre>COLLSCAN</pre></td>
+        </tr>
+        <tr>
+            <td>2023-11-15 10:12:33</td>
+            <td class="warning">850</td>
+            <td>analytics.user_sessions</td>
+            <td>aggregate</td>
+            <td><pre>{"$match": {"timestamp": {"$gt": ISODate("2023-11-01T00:00:00Z")}}}</pre></td>
+            <td><pre>IXSCAN { timestamp: 1 }</pre></td>
+        </tr>
+        <tr>
+            <td>2023-11-15 08:05:17</td>
+            <td class="warning">320</td>
+            <td>products.inventory</td>
+            <td>update</td>
+            <td><pre>{"product_id": {"$in": ["p1001", "p1002", "p1003"]}}</pre></td>
+            <td><pre>IXSCAN { product_id: 1 }</pre></td>
+        </tr>
+    </table>
+</body>
+</html>
+```
+
+## How to Use This Script
+
+1. **Prerequisites**:
+   - Install required packages: `pip install pymongo`
+   - For email functionality, you may need additional packages depending on your SMTP server
+
+2. **Configuration**:
+   - Update the MongoDB connection URI and database name
+   - Adjust the slow query threshold (in milliseconds)
+   - Configure email settings with your SMTP server details
+
+3. **Running the script**:
+   - Simply execute the script: `python mongodb_slow_queries.py`
+   - The script will generate an HTML file and send it via email
+
+4. **Notes**:
+   - Ensure MongoDB profiling is enabled for the database you're monitoring
+   - The script checks and enables profiling if it's disabled (at level 1)
+   - For production use, consider adding error handling and logging
+
+You can customize the HTML template and email settings to match your organization's branding and requirements.
