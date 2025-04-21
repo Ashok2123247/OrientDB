@@ -1,0 +1,114 @@
+// Set threshold for long-running queries in milliseconds
+const longRunningThreshold = 1000; // 1 second
+
+// Get current operations and filter for long-running queries
+const longRunningOps = db.currentOp({
+  "active": true,
+  "secs_running": { "$gt": longRunningThreshold / 1000 }
+});
+
+// Convert to array for easier processing
+const opsArray = longRunningOps.inprog.map(op => ({
+  opid: op.opid,
+  secs_running: op.secs_running,
+  ns: op.ns || 'N/A',
+  op: op.op || 'N/A',
+  command: JSON.stringify(op.command || {}, null, 2),
+  client: op.client || 'N/A',
+  desc: op.desc || 'N/A'
+}));
+
+// Generate HTML report
+const htmlReport = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MongoDB Long-Running Queries Report</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      margin: 20px;
+      color: #333;
+    }
+    h1 {
+      color: #2c3e50;
+      border-bottom: 2px solid #3498db;
+      padding-bottom: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #3498db;
+      color: white;
+    }
+    tr:nth-child(even) {
+      background-color: #f2f2f2;
+    }
+    pre {
+      background-color: #f8f8f8;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+    }
+    .timestamp {
+      font-size: 0.9em;
+      color: #7f8c8d;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <h1>MongoDB Long-Running Queries Report</h1>
+  <div class="timestamp">Generated: ${new Date().toISOString()}</div>
+  
+  <p>Threshold: ${longRunningThreshold} ms</p>
+  <p>Found ${opsArray.length} long-running operations</p>
+  
+  <table>
+    <thead>
+      <tr>
+        <th>OP ID</th>
+        <th>Seconds Running</th>
+        <th>Namespace</th>
+        <th>Operation</th>
+        <th>Client</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${opsArray.map(op => `
+        <tr>
+          <td>${op.opid}</td>
+          <td>${op.secs_running.toFixed(2)}</td>
+          <td>${op.ns}</td>
+          <td>${op.op}</td>
+          <td>${op.client}</td>
+          <td>${op.desc}</td>
+        </tr>
+        <tr>
+          <td colspan="6">
+            <strong>Command:</strong>
+            <pre>${op.command}</pre>
+          </td>
+        </tr>
+      `).join('')}
+    </tbody>
+  </table>
+</body>
+</html>
+`;
+
+// Write to file
+const fs = require('fs');
+fs.writeFileSync('mongodb_long_running_queries.html', htmlReport);
+
+print(`Report generated: mongodb_long_running_queries.html`);
