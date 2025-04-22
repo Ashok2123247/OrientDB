@@ -1,0 +1,69 @@
+#!/bin/bash
+
+# MongoDB Log Loader Script for CentOS
+# This script loads the last 10 minutes of system logs into MongoDB
+
+# Configuration variables
+MONGODB_HOST="localhost"          # MongoDB host
+MONGODB_PORT="27017"             # MongoDB port
+DATABASE_NAME="system_logs"       # Database name
+COLLECTION_NAME="centos_logs"     # Collection name
+LOG_FILE="/var/log/messages"      # Log file to monitor
+TIMEFRAME_MINUTES=10              # Timeframe in minutes to collect logs
+
+# Check if mongodb client tools are installed
+if ! command -v mongo &> /dev/null; then
+    echo "MongoDB client tools not found. Installing..."
+    sudo yum install -y mongodb-org-shell
+    if [ $? -ne 0 ]; then
+        echo "Failed to install MongoDB client tools. Exiting."
+        exit 1
+    fi
+fi
+
+# Check if log file exists
+if [ ! -f "$LOG_FILE" ]; then
+    echo "Log file $LOG_FILE not found. Exiting."
+    exit 1
+fi
+
+# Calculate timestamp for 10 minutes ago
+START_TIME=$(date -d "10 minutes ago" "+%b %d %H:%M")
+CURRENT_TIME=$(date "+%b %d %H:%M")
+
+echo "Collecting logs between $START_TIME and $CURRENT_TIME"
+
+# Extract logs from the last 10 minutes and format as JSON
+# Note: This assumes standard syslog format with timestamp at the beginning of each line
+LOG_ENTRIES=$(awk -v start="$START_TIME" -v end="$CURRENT_TIME" '
+    $0 ~ start, $0 ~ end { 
+        printf "{\"timestamp\": \"%s %s %s\", \"message\": \"", $1, $2, $3; 
+        for(i=4; i<=NF; i++) printf "%s ", $i; 
+        print "\"}"
+    }' "$LOG_FILE")
+
+# Check if we got any log entries
+if [ -z "$LOG_ENTRIES" ]; then
+    echo "No log entries found in the specified timeframe."
+    exit 0
+fi
+
+# Prepare MongoDB insert command
+INSERT_COMMAND=$(cat <<EOF
+use $DATABASE_NAME;
+db.$COLLECTION_NAME.insertMany([
+$LOG_ENTRIES
+]);
+EOF
+)
+
+# Execute MongoDB command
+echo "Loading logs into MongoDB..."
+echo "$INSERT_COMMAND" | mongo --host $MONGODB_HOST --port $MONGODB_PORT
+
+if [ $? -eq 0 ]; then
+    echo "Successfully loaded logs into MongoDB."
+else
+    echo "Failed to load logs into MongoDB."
+    exit 1
+fi
