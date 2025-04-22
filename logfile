@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# MongoDB Log Loader Script for CentOS
+# This script loads the last 10 minutes of JSON formatted logs into MongoDB
+
+# Configuration variables
+MONGODB_HOST="localhost"          # MongoDB host
+MONGODB_PORT="27017"             # MongoDB port
+DATABASE_NAME="system_logs"       # Database name
+COLLECTION_NAME="app_logs"        # Collection name
+LOG_FILE="/var/log/app.log"       # JSON log file to monitor
+TIMEFRAME_MINUTES=10              # Timeframe in minutes to collect logs
+
+# Check if mongodb client tools are installed
+if ! command -v mongo &> /dev/null; then
+    echo "MongoDB client tools not found. Installing..."
+    sudo yum install -y mongodb-org-shell
+    if [ $? -ne 0 ]; then
+        echo "Failed to install MongoDB client tools. Exiting."
+        exit 1
+    fi
+fi
+
+# Check if jq is installed (for JSON processing)
+if ! command -v jq &> /dev/null; then
+    echo "jq not found. Installing..."
+    sudo yum install -y jq
+    if [ $? -ne 0 ]; then
+        echo "Failed to install jq. Exiting."
+        exit 1
+    fi
+fi
+
+# Check if log file exists
+if [ ! -f "$LOG_FILE" ]; then
+    echo "Log file $LOG_FILE not found. Exiting."
+    exit 1
+fi
+
+# Calculate timestamp for 10 minutes ago in ISO format (assuming logs use ISO timestamps)
+START_TIME=$(date -u -d "10 minutes ago" "+%Y-%m-%dT%H:%M:%S.%3NZ")
+
+echo "Collecting logs since $START_TIME"
+
+# Create a temporary file for filtered logs
+TEMP_FILE=$(mktemp)
+
+# Process each log entry
+while IFS= read -r line; do
+    # Extract timestamp from log entry (assuming it's in the 't' field)
+    timestamp=$(echo "$line" | jq -r '.t')
+    
+    # Compare timestamps (only works with ISO 8601 format)
+    if [[ "$timestamp" > "$START_TIME" ]]; then
+        # Filter and transform the log entry as needed
+        filtered_entry=$(echo "$line" | jq '{
+            id: .id,
+            timestamp: .t,
+            severity: .s,
+            component: .c,
+            context: .ctx,
+            message: .msg,
+            attributes: .attr
+        }')
+        echo "$filtered_entry" >> "$TEMP_FILE"
+    fi
+done < "$LOG_FILE"
+
+# Check if we got any log entries
+if [ ! -s "$TEMP_FILE" ]; then
+    echo "No log entries found in the specified timeframe."
+    rm "$TEMP_FILE"
+    exit 0
+fi
+
+# Prepare MongoDB insert command
+INSERT_COMMAND=$(cat <<EOF
+use $DATABASE_NAME;
+db.$COLLECTION_NAME.insertMany(
+$(cat "$TEMP_FILE" | jq -s '.')
+);
+EOF
+)
+
+# Execute MongoDB command
+echo "Loading logs into MongoDB..."
+echo "$INSERT_COMMAND" | mongo --host $MONGODB_HOST --port $MONGODB_PORT
+
+if [ $? -eq 0 ]; then
+    echo "Successfully loaded logs into MongoDB."
+else
+    echo "Failed to load logs into MongoDB."
+    rm "$TEMP_FILE"
+    exit 1
+fi
+
+# Clean up
+rm "$TEMP_FILE"
