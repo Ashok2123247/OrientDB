@@ -1,0 +1,33 @@
+#!/bin/bash
+
+USER="admin"
+PASS="admin123"
+
+# Get all databases
+databases=$(influx -username "$USER" -password "$PASS" -execute 'SHOW DATABASES' -format csv | tail -n +2 | awk -F, '{print $2}')
+
+for db in $databases
+do
+  echo "============================================"
+  echo "Database: $db"
+  echo "============================================"
+
+  # Get all measurements inside the database
+  measurements=$(influx -username "$USER" -password "$PASS" -database "$db" -execute 'SHOW MEASUREMENTS' -format csv | tail -n +2 | awk -F, '{print $2}')
+
+  for m in $measurements
+  do
+    # Get first field of the measurement
+    first_field=$(influx -username "$USER" -password "$PASS" -database "$db" -execute "SHOW FIELD KEYS FROM \"$m\"" -format csv | tail -n +2 | awk -F, '{print $1}' | head -n1)
+
+    if [ -n "$first_field" ]; then
+      echo "Measurement: $m | First Field: $first_field"
+      influx -username "$USER" -password "$PASS" -database "$db" -execute "SELECT COUNT(\"$first_field\") FROM \"$m\"" -format pretty
+    else
+      echo "Measurement: $m | No fields found!"
+    fi
+
+    echo ""
+  done
+
+done
