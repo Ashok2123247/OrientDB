@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# Email settings
+TO_EMAIL="you@example.com"
+SUBJECT="🚨 System Alert on $(hostname)"
+CONTENT_TYPE="Content-Type: text/html"
+
+# Thresholds
+CPU_CRITICAL=90
+CPU_WARNING=80
+MEM_CRITICAL=90
+MEM_WARNING=80
+REPL_LAG_CRITICAL=60
+
+# Get CPU usage
+CPU_TOTAL=$(top -bn1 | grep "Cpu(s)" | awk '{print 100 - $8}')
+CPU_TOTAL=$(printf "%.1f" "$CPU_TOTAL")
+
+# Get Memory usage
+MEM_USED=$(free -m | awk '/Mem:/ {print $3}')
+MEM_TOTAL=$(free -m | awk '/Mem:/ {print $2}')
+MEM_PERC=$(awk "BEGIN {printf \"%.1f\", ($MEM_USED/$MEM_TOTAL)*100}")
+
+# Top processes
+TOP_CPU=$(ps -eo pid,ppid,cmd,%cpu --sort=-%cpu | head -n 2 | tail -n 1)
+TOP_MEM=$(ps -eo pid,ppid,cmd,%mem --sort=-%mem | head -n 2 | tail -n 1)
+
+# MongoDB replication lag
+REPL_LAG=0
+REPL_STATUS=$(mongo --quiet --eval 'rs.printSlaveReplicationInfo()' 2>/dev/null)
+if echo "$REPL_STATUS" | grep -q "behind the primary"; then
+    REPL_LAG=$(echo "$REPL_STATUS" | grep "behind the primary" | awk '{print $(NF-1)}')
+fi
+
+# Disk usage
+DISK_HTML=""
+DISK_ALERT=0
+DISK_REPORT=$(df -h --output=target,pcent | tail -n +2)
+
+while read -r line; do
+    MOUNT=$(echo "$line" | awk '{print $1}')
+    USAGE=$(echo "$line" | awk '{print $2}' | tr -d '%')
+
+    if [ "$USAGE" -ge 90 ]; then
+        STATUS="CRITICAL"
+        COLOR="red"
+        DISK_ALERT=1
+    elif [ "$USAGE" -ge 80 ]; then
+        STATUS="WARNING"
+        COLOR="orange"
+        DISK_ALERT=1
+    else
+        STATUS="NORMAL"
+        COLOR="green"
+    fi
+
+    DISK_HTML+="<tr style='color:$COLOR;'><td>$MOUNT</td><td>${USAGE}%</td><td>$STATUS</td></tr>"
+done <<< "$DISK_REPORT"
+
+# Status formatting functions
+get_status_color() {
+    local usage=$1
+    local critical=$2
+    local warning=$3
+    if (( $(echo "$usage >= $critical" | bc -l) )); then
+        echo "CRITICAL|red"
+    elif (( $(echo "$usage >= $warning" | bc -l) )); then
+        echo "WARNING|orange"
+    else
+        echo "NORMAL|green"
+    fi
+}
+
+# CPU status
+CPU_STATUS_COLOR=$(get_status_color "$CPU_TOTAL" "$CPU_CRITICAL" "$CPU_WARNING")
+CPU_STATUS=${CPU_STATUS_COLOR%%|*}
+CPU_COLOR=${CPU_STATUS_COLOR##*|}
+
+# MEM status
+MEM_STATUS_COLOR=$(get_status_color "$MEM_PERC" "$MEM_CRITICAL" "$MEM_WARNING")
+MEM_STATUS=${MEM_STATUS_COLOR%%|*}
+MEM_COLOR=${MEM_STATUS_COLOR##*|}
+
+# Replication lag status
+if [ "$REPL_LAG" -ge "$REPL_LAG_CRITICAL" ]; then
+    REPL_STATUS="CRITICAL"
+    REPL_COLOR="red"
+else
+    REPL_STATUS="NORMAL"
+    REPL_COLOR="green"
+fi
+
+# Build HTML message
+HTML_MSG="
+<html>
+<head><style>
+  table { border-collapse: collapse; width: 90%; font-family: Arial, sans-serif; }
+  th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+  th { background-color: #f4f4f4; }
+</style></head>
+<body>
+<h2>🚨 System Monitoring Alert - $(hostname)</h2>
+
+<h3>📊 System Resource Summary</h3>
+<table>
+<tr><th>Metric</th><th>Value</th><th>Status</th></tr>
+<tr style='color:$CPU_COLOR;'><td>Total CPU Usage</td><td>${CPU_TOTAL}%</td><td>$CPU_STATUS</td></tr>
+<tr style='color:$MEM_COLOR;'><td>Total Memory Usage</td><td>${MEM_PERC}% (${MEM_USED}MB / ${MEM_TOTAL}MB)</td><td>$MEM_STATUS</td></tr>
+<tr style='color:$REPL_COLOR;'><td>MongoDB Replication Lag</td><td>${REPL_LAG} seconds</td><td>$REPL_STATUS</td></tr>
+</table>
+
+<h3>🔥 Top CPU Process</h3>
+<pre>$TOP_CPU</pre>
+
+<h3>💾 Top Memory Process</h3>
+<pre>$TOP_MEM</pre>
+
+<h3>🧮 Disk Usage Summary</h3>
+<table>
+<tr><th>Mount Point</th><th>Usage</th><th>Status</th></tr>
+$DISK_HTML
+</table>
+
+<br><br>
+<small>This is an automated alert from your monitoring script.</small>
+</body>
+</html>
+"
+
+# Determine if any alert exists
+TRIGGER_ALERT=0
+if (( $(echo "$CPU_TOTAL >= $CPU_CRITICAL" | bc -l) )) || \
+   (( $(echo "$MEM_PERC >= $MEM_CRITICAL" | bc -l) )) || \
+   (( "$REPL_LAG" >= "$REPL_LAG_CRITICAL" )) || \
+   (( "$DISK_ALERT" == 1 )); then
+   TRIGGER_ALERT=1
+fi
+
+# Send email
+if [ "$TRIGGER_ALERT" -eq 1 ]; then
+    echo "$HTML_MSG" | mailx -a "$CONTENT_TYPE" -s "$SUBJECT" "$TO_EMAIL"
+fi
