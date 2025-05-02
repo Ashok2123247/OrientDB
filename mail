@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Email settings
+TO_EMAIL="you@example.com"
+SUBJECT="System Alert on $(hostname)"
+
+# Thresholds
+CPU_THRESHOLD=80      # Top process CPU usage in %
+MEM_THRESHOLD=80      # Top process MEM usage in %
+REPL_LAG_THRESHOLD=60 # Replication lag in seconds
+
+# Get top CPU consuming process
+TOP_CPU=$(ps -eo pid,ppid,cmd,%cpu --sort=-%cpu | head -n 2 | tail -n 1)
+CPU_USAGE=$(echo $TOP_CPU | awk '{print $4}')
+
+# Get top Memory consuming process
+TOP_MEM=$(ps -eo pid,ppid,cmd,%mem --sort=-%mem | head -n 2 | tail -n 1)
+MEM_USAGE=$(echo $TOP_MEM | awk '{print $4}')
+
+# Check MongoDB replication lag
+REPL_LAG=0
+REPL_STATUS=$(mongo --quiet --eval 'rs.printSlaveReplicationInfo()' 2>/dev/null)
+
+if echo "$REPL_STATUS" | grep -q "behind the primary"; then
+    REPL_LAG=$(echo "$REPL_STATUS" | grep "behind the primary" | awk '{print $(NF-1)}')
+fi
+
+# Create alert message
+ALERT_MSG=""
+
+if (( $(echo "$CPU_USAGE > $CPU_THRESHOLD" | bc -l) )); then
+    ALERT_MSG+="High CPU Usage: $CPU_USAGE% - $TOP_CPU\n"
+fi
+
+if (( $(echo "$MEM_USAGE > $MEM_THRESHOLD" | bc -l) )); then
+    ALERT_MSG+="High Memory Usage: $MEM_USAGE% - $TOP_MEM\n"
+fi
+
+if (( $(echo "$REPL_LAG > $REPL_LAG_THRESHOLD" | bc -l) )); then
+    ALERT_MSG+="MongoDB Replication Lag: $REPL_LAG seconds\n"
+fi
+
+# Send email if there's an alert
+if [[ -n "$ALERT_MSG" ]]; then
+    echo -e "$ALERT_MSG" | mailx -s "$SUBJECT" "$TO_EMAIL"
+fi
