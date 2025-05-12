@@ -1,0 +1,36 @@
+## Root Cause Analysis - IOWait Spike on MongoDB Secondary
+
+### Issue
+Observed high I/O wait on MongoDB secondary replica set node every Monday around 02:00 AM.
+
+### Impact
+- Temporary replication lag of ~10 minutes
+- Increased disk latency (~150ms average)
+- Slower read performance from secondary node
+
+### Investigation Summary
+1. **System Metrics:**
+   - `iostat` and `vmstat` showed IOWait peaking at ~60% CPU usage during the spike.
+
+2. **MongoDB Logs:**
+   - No re-syncs or unusual replication behavior.
+   - No index builds or rollbacks.
+
+3. **Cron Jobs:**
+   - Found a weekly scheduled **PBM backup job** triggered every Monday at 02:00 AM.
+   - Job involves compression and upload to remote S3-compatible storage.
+
+4. **Disk Usage:**
+   - `iotop` revealed `pbm-agent` consuming 70–80% of disk I/O during the spike.
+
+5. **Replication Lag:**
+   - ~7 minutes lag observed due to oplog application delay during heavy disk writes.
+
+### Root Cause
+Weekly scheduled PBM full backup on the secondary node caused significant disk I/O pressure, leading to high iowait and minor replication lag.
+
+### Recommendation
+- Reschedule PBM backup to off-peak hours (e.g., early Sunday morning)
+- Consider throttling backup speed or using incremental backups
+- Investigate disk IOPS capacity and consider SSDs if on HDD
+
