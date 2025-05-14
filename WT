@@ -1,0 +1,200 @@
+Secondary nodes in a MongoDB replica set can use more **swap memory** than expected—even when there appears to be **sufficient free RAM**—due to how the **Linux kernel handles memory** and how MongoDB manages resources on secondaries. Let’s break this down into **two parts**:
+
+---
+
+### 🔹 Part 1: Why is the secondary using swap despite available memory?
+
+Several reasons could cause this:
+
+#### 1. **Linux Kernel Behavior (VM Overcommit and Swapping)**
+
+* **Linux may swap inactive pages** even when there’s free RAM, to keep more memory available for disk cache or to optimize page usage.
+* MongoDB processes might have **idle but allocated memory** (e.g., infrequently accessed query results, or internal caches).
+* The kernel may decide to **swap these pages out** to make room for filesystem cache, especially on systems with low `swappiness` settings.
+
+#### 2. **Memory Fragmentation**
+
+* MongoDB’s memory usage isn’t always contiguous.
+* Even if total free memory is high, fragmentation may cause swapping.
+
+#### 3. **Expensive Read Queries**
+
+* If the secondary is handling **expensive queries** (e.g., large aggregations or unindexed scans), it might:
+
+  * Temporarily allocate large memory blocks.
+  * Evict less-used memory to swap, especially for background replication tasks.
+
+#### 4. **Background Replication & Index Builds**
+
+* Secondary nodes still do:
+
+  * **Oplog replay**
+  * **Index builds**
+  * **Validation**
+* These tasks use memory and may trigger swapping under pressure.
+
+#### 5. **WiredTiger Cache Size Configuration**
+
+* MongoDB’s internal cache (WiredTiger) uses up to \~50% of RAM by default.
+* If you also run large queries, the system might resort to swap.
+
+#### ➤ **To minimize swap usage:**
+
+* Lower `vm.swappiness` (e.g., `echo 1 > /proc/sys/vm/swappiness`)
+* Tune MongoDB's cache size via `storage.wiredTiger.engineConfig.cacheSizeGB`
+* Monitor using `vmstat`, `htop`, or `perf` for pinpointing swap triggers.
+
+---
+
+### 🔹 Part 2: When does a read from a secondary get routed to the primary?
+
+If a client sets **read preference to secondary**, MongoDB tries to route reads to secondaries. However, it can fall back to the **primary** in certain conditions:
+
+#### ✅ Read from Secondary may route to Primary when:
+
+1. **Secondary is stale / lagging**
+
+   * If replication lag exceeds `maxStalenessSeconds`, reads are rerouted.
+   * Prevents inconsistent data due to stale reads.
+
+2. **Secondary unavailable**
+
+   * Network issues, node down, or unreachable => fallback to primary.
+
+3. **Query Requires Monotonic Reads**
+
+   * If `readConcern: "majority"` is used and secondaries can't serve it reliably.
+   * Or, `afterClusterTime` (causal consistency) cannot be satisfied on secondaries.
+
+4. **Partial Failures in a Sharded Cluster**
+
+   * Mongos may reroute reads to available nodes (including primary) if the target shard's secondary is down or unresponsive.
+
+5. **Client Fallback Configuration**
+
+   * If using drivers with fallback logic (e.g., `readPreference: secondaryPreferred`), it will try primary if no secondaries are available.
+
+---
+
+### ✅ Final Recommendations
+
+* **Monitor secondaries** for replication lag, memory pressure, and query patterns.
+* Use **`top`, `vmstat`, `iostat`**, and `db.serverStatus()` to trace memory and swap patterns.
+* Prefer **read scaling with appropriate indexes** on secondaries to avoid heavy memory consumption.
+
+Let me know if you'd like help analyzing specific logs or metrics to explain your case further.
+
+
+
+
+
+
+
+
+Yes, **you can adjust the WiredTiger cache size** in MongoDB, and **increasing it beyond the default 50% of RAM** is allowed — but you should **be cautious**, as it may **introduce stability or performance issues** if not tuned properly.
+
+---
+
+### 🔹 Default Behavior
+
+By default, **WiredTiger** allocates about:
+
+* **50% of RAM** (on non-Windows systems) to its internal cache.
+* Controlled by the setting:
+
+  ```yaml
+  storage.wiredTiger.engineConfig.cacheSizeGB
+  ```
+
+If **not set**, MongoDB calculates it automatically using:
+
+```
+cacheSizeGB = (total RAM - 1 GB) * 0.5
+```
+
+---
+
+### 🔧 How to Increase WiredTiger Cache
+
+In your `mongod.conf`:
+
+```yaml
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 10  # Set based on your system’s memory
+```
+
+Or via command-line:
+
+```bash
+mongod --wiredTigerCacheSizeGB 10
+```
+
+---
+
+### ⚠️ Risks of Increasing WiredTiger Cache Size
+
+If you increase it **too much**, it can cause **system-wide issues**:
+
+#### 1. **OS Starvation**
+
+* MongoDB isn't the only thing needing RAM.
+* The OS, filesystem cache, and other processes (e.g., monitoring agents, backup tools) need memory too.
+* If you assign **too much to MongoDB**, the OS may **start swapping**, which ironically **slows down MongoDB** and hurts performance.
+
+#### 2. **Increased Swap Usage**
+
+* MongoDB’s internal memory is pinned. If WiredTiger takes too much, **non-Mongo processes get swapped out**.
+* Can cause a **false sense of available memory** but with performance degradation.
+
+#### 3. **Crash Risk on Memory Pressure**
+
+* Under high load, WiredTiger may not gracefully handle **memory exhaustion**.
+* On small systems (e.g., <8GB RAM), increasing cache too much can lead to **OOM (Out of Memory)** kills.
+
+---
+
+### ✅ Safe Guidelines for Custom Cache Size
+
+| System RAM | Recommended Max WiredTiger Cache |
+| ---------- | -------------------------------- |
+| 4 GB       | 1.5–2 GB                         |
+| 8 GB       | 4 GB                             |
+| 16 GB      | 8–10 GB                          |
+| 32+ GB     | Up to 20–24 GB (with caution)    |
+
+Keep **at least 20–30% free** for:
+
+* OS
+* File system cache (important for MongoDB I/O)
+* Other daemons/processes
+
+---
+
+### 🔍 When SHOULD You Increase It?
+
+* Workload involves **large working sets** that **exceed** the current cache.
+* You see **frequent page faults** in `db.serverStatus().wiredTiger.cache`.
+* Your system has **ample unused RAM** and you're not using it effectively.
+
+---
+
+### ✅ Monitoring After Change
+
+After increasing:
+
+* Monitor swap usage with `vmstat`, `top`, or `htop`.
+* Watch:
+
+  ```bash
+  db.serverStatus().wiredTiger.cache["bytes currently in the cache"]
+  db.serverStatus().mem
+  ```
+* Ensure **cache hit ratio** remains high.
+* Keep an eye on **`evicted pages`** and **`dirty pages` not being cleared**.
+
+---
+
+Let me know how much RAM your system has and I can suggest an optimal cache size.
+
