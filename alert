@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# Set date and log file
+TODAY=$(date +%Y-%m-%d)
+ALERTED_HASHES_FILE="/tmp/mongo_slow_queries_alerted_$TODAY.log"
+
+# MongoDB connection
+MONGO_URI="mongodb://localhost:27017"
+DB_NAME="admin"
+
+# Create the file if not exist
+touch "$ALERTED_HASHES_FILE"
+
+# Query profiler for slow queries (duration > 60000 ms = 60 sec)
+mongo "$MONGO_URI/$DB_NAME" --quiet --eval '
+db.system.profile.find({ millis: { $gt: 60000 } }).forEach(function(doc) {
+    printjson({ ns: doc.ns, query: doc.query, millis: doc.millis });
+});
+' | while read -r line; do
+
+    # Generate a hash for each unique query line
+    QUERY_HASH=$(echo "$line" | md5sum | awk '{print $1}')
+
+    # Check if already alerted today
+    if grep -q "$QUERY_HASH" "$ALERTED_HASHES_FILE"; then
+        echo "Already alerted for this query today: $QUERY_HASH"
+    else
+        echo "Sending alert for new slow query..."
+
+        # Call your mail sending logic here
+        echo -e "Subject: [MongoDB Alert] Slow Query Detected\n\nSlow Query:\n$line" | sendmail you@example.com
+
+        # Record the hash to avoid duplicates
+        echo "$QUERY_HASH" >> "$ALERTED_HASHES_FILE"
+    fi
+done
+=======================================================================
+#!/bin/bash
+
+# Configurable variables
+LOG_FILE="/var/log/mongodb/mongod.log"  # Path to MongoDB log file
+THRESHOLD_MS=60000                      # 1 minute = 60000 ms
+ALERT_LOG="/tmp/mongo_slow_query_alerts_$(date +%F).log"  # Daily log to track alerts
+EMAIL="your_email@example.com"
+
+# Grep and process queries slower than threshold
+grep "command .*ms" "$LOG_FILE" | awk -v threshold=$THRESHOLD_MS '
+    {
+        # Extract duration and filter based on threshold
+        match($0, /([0-9]+)ms/, duration);
+        if (duration[1] > threshold) {
+            print $0;
+        }
+    }
+' | while read -r line; do
+    # Extract the query part (adjust regex if needed)
+    query=$(echo "$line" | sed -n 's/.*command \([^ ]*\) .*$/\1/p')
+
+    # Generate hash of the query
+    query_hash=$(echo "$query" | md5sum | awk '{print $1}')
+
+    # Check if hash already alerted today
+    if ! grep -q "$query_hash" "$ALERT_LOG" 2>/dev/null; then
+        # Log it to prevent duplicate alert today
+        echo "$query_hash" >> "$ALERT_LOG"
+
+        # Send email alert
+        echo -e "Subject: Slow MongoDB Query Alert\n\nSlow Query Detected:\n$line" | sendmail "$EMAIL"
+    fi
+done
