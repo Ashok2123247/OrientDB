@@ -1,0 +1,14 @@
+// Connect to your target database
+const dbName = "your_database_name";  // Replace with your database name
+const db = db.getSiblingDB(dbName);
+
+// Get list of collections
+const collections = db.getCollectionNames();
+
+// Filter and drop collections that end with 'timeseries'
+collections.forEach(function (collName) {
+    if (collName.endsWith("timeseries")) {
+        print(`Dropping collection: ${collName}`);
+        db[collName].drop();
+    }
+});
