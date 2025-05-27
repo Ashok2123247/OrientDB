@@ -1,0 +1,62 @@
+const fs = require('fs');
+const path = '/tmp/mongo_currentops.json';
+const htmlPath = '/tmp/mongo_currentops.html';
+
+const thresholdMillis = 5000; // 5 seconds
+
+const currentOps = db.currentOp({ active: true, secs_running: { $gte: thresholdMillis / 1000 } }).inprog;
+
+function generateKey(op) {
+  return `${op.ns}-${op.op}-${op.command ? JSON.stringify(op.command) : ''}`;
+}
+
+const prevData = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path)) : {};
+const prevKeys = new Set(prevData.keys || []);
+
+const newOps = [];
+const seenKeys = [];
+
+for (let op of currentOps) {
+  if (!op.ns || !op.command) continue;
+
+  const key = generateKey(op);
+  if (!prevKeys.has(key)) {
+    seenKeys.push(key);
+    newOps.push({
+      ns: op.ns,
+      op: op.op,
+      secs_running: op.secs_running,
+      command: op.command,
+    });
+  }
+}
+
+// Save current state
+fs.writeFileSync(path, JSON.stringify({ keys: seenKeys }, null, 2));
+
+// Generate HTML
+let html = `
+<html><head><style>
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #999; padding: 8px; text-align: left; }
+th { background-color: #eee; }
+</style></head><body>
+<h2>Long Running MongoDB Queries</h2>
+<table>
+<tr><th>Namespace</th><th>Operation</th><th>Seconds Running</th><th>Command</th></tr>
+`;
+
+for (let op of newOps) {
+  html += `<tr>
+    <td>${op.ns}</td>
+    <td>${op.op}</td>
+    <td>${op.secs_running}</td>
+    <td><pre>${JSON.stringify(op.command, null, 2)}</pre></td>
+  </tr>`;
+}
+
+html += `</table></body></html>`;
+
+fs.writeFileSync(htmlPath, html);
+
+print(`HTML report written to: ${htmlPath}`);
