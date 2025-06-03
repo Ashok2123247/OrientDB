@@ -1,0 +1,155 @@
+#!/bin/bash
+
+# MongoDB Backup and Restore Script with exact restore method matching backup
+# Features: 
+# - Restores exactly as backed up (filtered collection, full collection, or full DB)
+# - Drops existing data before restore when needed
+# - Validates restore was successful
+
+# Configuration - modify these values
+SOURCE_SERVER="server1"
+TARGET_SERVER="server2"
+DB_NAME="mydatabase"
+COLLECTION="mycollection"  # Leave empty for full database backup
+FILTER='{"status":"active"}'  # Leave empty for full collection backup
+BACKUP_PATH="/tmp/mongobackups"
+DROP_EXISTING=true  # Set to false to skip dropping existing collections/db
+VALIDATE=true      # Set to false to skip validation
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# Function to get MongoDB URI
+get_mongo_uri() {
+    local server_name="$1"
+    case "$server_name" in
+        "server1") echo "mongodb://user:pass@server1.example.com:27017" ;;
+        "server2") echo "mongodb://user:pass@server2.example.com:27017" ;;
+        *) echo "mongodb://user:pass@$server_name.example.com:27017" ;;
+    esac
+}
+
+# Function to validate restore
+validate_restore() {
+    local uri="$1"
+    local db="$2"
+    local collection="$3"
+    local filter="$4"
+    local backup_file="$5"
+    
+    echo "Validating restore..."
+    
+    if [[ -n "$collection" ]]; then
+        if [[ -n "$filter" ]]; then
+            # Count documents matching the filter in target
+            target_count=$(mongo "$uri" --quiet --eval "db = db.getSiblingDB('$db'); db.$collection.count($filter)")
+            # Count documents in the backup file
+            backup_count=$(wc -l < "$backup_file")
+            backup_count=$((backup_count - 1))  # Subtract header line
+            
+            if [[ "$target_count" -eq "$backup_count" ]]; then
+                echo "Validation successful: $backup_count documents restored"
+            else
+                echo "Validation failed: Expected $backup_count documents, found $target_count"
+                return 1
+            fi
+        else
+            # Count all documents in target collection
+            target_count=$(mongo "$uri" --quiet --eval "db = db.getSiblingDB('$db'); db.$collection.count()")
+            # Count documents in the backup file
+            backup_count=$(wc -l < "$backup_file")
+            backup_count=$((backup_count - 1))  # Subtract header line
+            
+            if [[ "$target_count" -eq "$backup_count" ]]; then
+                echo "Validation successful: $backup_count documents restored"
+            else
+                echo "Validation failed: Expected $backup_count documents, found $target_count"
+                return 1
+            fi
+        fi
+    else
+        # For full DB restore, check if at least one collection exists
+        collections_count=$(mongo "$uri" --quiet --eval "db = db.getSiblingDB('$db'); db.getCollectionNames().length")
+        if [[ "$collections_count" -gt 0 ]]; then
+            echo "Validation successful: Database restored with $collections_count collections"
+        else
+            echo "Validation failed: No collections found in restored database"
+            return 1
+        fi
+    fi
+}
+
+# Get URIs for source and target
+SOURCE_URI=$(get_mongo_uri "$SOURCE_SERVER")
+TARGET_URI=$(get_mongo_uri "$TARGET_SERVER")
+
+if [[ -z "$SOURCE_URI" || -z "$TARGET_URI" ]]; then
+    echo "Error: Could not retrieve MongoDB URIs"
+    exit 1
+fi
+
+# Create backup directory
+mkdir -p "$BACKUP_PATH"
+
+# Perform backup
+echo "Starting backup..."
+BACKUP_FILE=""
+if [[ -n "$COLLECTION" ]]; then
+    if [[ -n "$FILTER" ]]; then
+        # Filtered collection backup
+        BACKUP_FILE="${DB_NAME}_${COLLECTION}_filter_${TIMESTAMP}.json"
+        echo "Exporting $DB_NAME.$COLLECTION with filter $FILTER to $BACKUP_FILE"
+        mongoexport --uri="$SOURCE_URI" -d "$DB_NAME" -c "$COLLECTION" --query="$FILTER" --out="$BACKUP_PATH/$BACKUP_FILE"
+    else
+        # Full collection backup
+        BACKUP_FILE="${DB_NAME}_${COLLECTION}_${TIMESTAMP}.json"
+        echo "Exporting $DB_NAME.$COLLECTION to $BACKUP_FILE"
+        mongoexport --uri="$SOURCE_URI" -d "$DB_NAME" -c "$COLLECTION" --out="$BACKUP_PATH/$BACKUP_FILE"
+    fi
+else
+    # Full database backup
+    BACKUP_FILE="${DB_NAME}_${TIMESTAMP}"
+    echo "Creating dump of $DB_NAME to $BACKUP_FILE"
+    mongodump --uri="$SOURCE_URI" --db "$DB_NAME" --out="$BACKUP_PATH/$BACKUP_FILE"
+fi
+
+if [[ $? -ne 0 ]]; then
+    echo "Error: Backup failed"
+    exit 1
+fi
+
+# Perform restore
+echo "Starting restore..."
+if [[ -n "$COLLECTION" ]]; then
+    # Collection restore (filtered or full)
+    if [[ "$DROP_EXISTING" = true ]]; then
+        echo "Dropping existing collection $DB_NAME.$COLLECTION..."
+        mongo "$TARGET_URI" --quiet --eval "db = db.getSiblingDB('$DB_NAME'); db.$COLLECTION.drop()"
+    fi
+    
+    echo "Importing $BACKUP_FILE to $TARGET_URI"
+    mongoimport --uri="$TARGET_URI" -d "$DB_NAME" -c "$COLLECTION" --file="$BACKUP_PATH/$BACKUP_FILE"
+    
+    if [[ "$VALIDATE" = true ]]; then
+        validate_restore "$TARGET_URI" "$DB_NAME" "$COLLECTION" "$FILTER" "$BACKUP_PATH/$BACKUP_FILE" || exit 1
+    fi
+else
+    # Full database restore
+    if [[ "$DROP_EXISTING" = true ]]; then
+        echo "Dropping existing database $DB_NAME..."
+        mongo "$TARGET_URI" --quiet --eval "db = db.getSiblingDB('$DB_NAME'); db.dropDatabase()"
+    fi
+    
+    echo "Restoring $BACKUP_FILE to $TARGET_URI"
+    mongorestore --uri="$TARGET_URI" --db "$DB_NAME" --drop "$BACKUP_PATH/$BACKUP_FILE"
+    
+    if [[ "$VALIDATE" = true ]]; then
+        validate_restore "$TARGET_URI" "$DB_NAME" "" "" "" || exit 1
+    fi
+fi
+
+if [[ $? -ne 0 ]]; then
+    echo "Error: Restore failed"
+    exit 1
+fi
+
+echo "Backup and restore completed successfully"
+exit 0
