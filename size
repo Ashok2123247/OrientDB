@@ -1,0 +1,93 @@
+#!/bin/bash
+
+# Configuration
+MONGO_HOSTS=("mongodb1.example.com" "mongodb2.example.com" "mongodb3.example.com")
+MONGO_PORT=27017
+MONGO_USER="monitoring_user"
+MONGO_PASS="password"
+PG_HOST="postgres.example.com"
+PG_PORT=5432
+PG_USER="pg_monitoring_user"
+PG_PASS="pg_password"
+PG_DB="monitoring_db"
+PG_TABLE="mongo_db_sizes"
+
+# Current timestamp
+CURRENT_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+
+# Connect to each MongoDB host and collect database sizes
+for HOST in "${MONGO_HOSTS[@]}"; do
+    # Get list of databases (excluding admin, config, and local)
+    DATABASES=$(mongo --host $HOST --port $MONGO_PORT --username $MONGO_USER --password $MONGO_PASS --quiet --eval "db.getMongo().getDBNames().filter(function(db){return ['admin','config','local'].indexOf(db) === -1})")
+    
+    # Process each database
+    for DB in $DATABASES; do
+        # Get database size in MB
+        SIZE_MB=$(mongo --host $HOST --port $MONGO_PORT --username $MONGO_USER --password $MONGO_PASS --quiet $DB --eval "db.stats(1024*1024).dataSize")
+        
+        # Insert into PostgreSQL
+        PGPASSWORD=$PG_PASS psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB -c \
+            "INSERT INTO $PG_TABLE (check_date, host_name, db_name, size_mb) VALUES ('$CURRENT_DATE', '$HOST', '$DB', $SIZE_MB);"
+    done
+done
+
+echo "Database size collection completed at $(date)"
+
+
+
+
+
+
+
+#!/bin/bash
+
+# Configuration
+MONGO_HOSTS=("mongodb1.example.com" "mongodb2.example.com" "mongodb3.example.com")
+MONGO_PORT=27017
+MONGO_USER="monitoring_user"
+MONGO_PASS="password"
+PG_HOST="postgres.example.com"
+PG_PORT=5432
+PG_USER="pg_monitoring_user"
+PG_PASS="pg_password"
+PG_DB="monitoring_db"
+PG_TABLE="mongo_collection_sizes"
+
+# Current timestamp
+CURRENT_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+
+# Connect to each MongoDB host and collect collection sizes
+for HOST in "${MONGO_HOSTS[@]}"; do
+    # Get list of databases (excluding admin, config, and local)
+    DATABASES=$(mongo --host $HOST --port $MONGO_PORT --username $MONGO_USER --password $MONGO_PASS --quiet --eval "db.getMongo().getDBNames().filter(function(db){return ['admin','config','local'].indexOf(db) === -1})")
+    
+    # Process each database
+    for DB in $DATABASES; do
+        # Get list of collections
+        COLLECTIONS=$(mongo --host $HOST --port $MONGO_PORT --username $MONGO_USER --password $MONGO_PASS --quiet $DB --eval "db.getCollectionNames().join(' ')")
+        
+        # Process each collection
+        for COLLECTION in $COLLECTIONS; do
+            # Skip system collections
+            if [[ $COLLECTION == system.* ]]; then
+                continue
+            fi
+            
+            # Get collection size in MB
+            SIZE_MB=$(mongo --host $HOST --port $MONGO_PORT --username $MONGO_USER --password $MONGO_PASS --quiet $DB --eval "db['$COLLECTION'].stats(1024*1024).size")
+            
+            # Get document count
+            COUNT=$(mongo --host $HOST --port $MONGO_PORT --username $MONGO_USER --password $MONGO_PASS --quiet $DB --eval "db['$COLLECTION'].countDocuments()")
+            
+            # Insert into PostgreSQL
+            PGPASSWORD=$PG_PASS psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $PG_DB -c \
+                "INSERT INTO $PG_TABLE (check_date, host_name, db_name, collection_name, size_mb, document_count) VALUES ('$CURRENT_DATE', '$HOST', '$DB', '$COLLECTION', $SIZE_MB, $COUNT);"
+        done
+    done
+done
+
+echo "Collection size collection completed at $(date)"
+
+
+
+
