@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# --- Configuration ---
+URI_STORAGE_DB="your_admin_db"             # The database where your URIs are stored
+URI_STORAGE_COLLECTION="connection_uris"   # The collection holding the URIs
+URI_STORAGE_HOST="localhost"               # Host of the server where URI storage is
+URI_STORAGE_PORT="27017"                   # Port of the server where URI storage is
+URI_STORAGE_USER="your_uri_db_user"        # User to connect to the URI storage DB
+URI_STORAGE_PASSWORD="your_uri_db_password" # Password for the URI storage DB
+
+OUTPUT_FILE="mongodb_collection_sizes.txt" # File to save results
+
+# --- Functions ---
+
+# Function to extract URIs from the storage collection
+get_uris() {
+    mongo "$URI_STORAGE_HOST:$URI_STORAGE_PORT/$URI_STORAGE_DB" \
+          -u "$URI_STORAGE_USER" \
+          -p "$URI_STORAGE_PASSWORD" \
+          --authenticationDatabase "$URI_STORAGE_DB" \
+          --eval "db.$URI_STORAGE_COLLECTION.find({}, {uri: 1, name: 1, _id: 0}).map(function(doc){ return JSON.stringify(doc); });" \
+          --quiet | tr -d '\n' | sed 's/}, {/\n/g' | sed 's/^\[{//' | sed 's/}]$//' | sed 's/},{/}\n{/g'
+}
+
+# Function to get collection sizes for a given URI
+get_collection_sizes() {
+    local uri="$1"
+    local server_name="$2"
+    local mongo_command=""
+
+    echo "--- Connecting to Server: $server_name ($uri) ---" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+
+    # The MongoDB script to get collection sizes
+    mongo_command=$(cat <<EOF
+        var output = [];
+        var dbs = db.adminCommand("listDatabases").databases;
+        dbs.forEach(function(dbInfo) {
+            var dbName = dbInfo.name;
+            try {
+                var currentDb = db.getSiblingDB(dbName);
+                var collections = currentDb.getCollectionNames();
+                collections.forEach(function(colName) {
+                    try {
+                        var stats = currentDb[colName].stats();
+                        output.push({
+                            "database": dbName,
+                            "collection": colName,
+                            "size_bytes": stats.size,
+                            "size_mb": (stats.size / (1024 * 1024)).toFixed(2),
+                            "count": stats.count
+                        });
+                    } catch (e) {
+                        print("Error getting stats for " + dbName + "." + colName + ": " + e);
+                    }
+                });
+            } catch (e) {
+                print("Error accessing database " + dbName + ": " + e);
+            }
+        });
+        printjson(output);
+EOF
+    )
+
+    # Execute the MongoDB command
+    mongo "$uri" --eval "$mongo_command" --quiet >> "$OUTPUT_FILE"
+
+    echo "" >> "$OUTPUT_FILE"
+    echo "--- End Server: $server_name ---" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE"
+}
+
+# --- Main Script ---
+
+echo "Starting MongoDB collection size report..."
+echo "" > "$OUTPUT_FILE" # Clear previous output
+
+URIS=$(get_uris)
+
+if [ -z "$URIS" ]; then
+    echo "No URIs found in the collection '$URI_STORAGE_COLLECTION' in database '$URI_STORAGE_DB'."
+    exit 1
+fi
+
+echo "$URIS" | while IFS= read -r line; do
+    # Parse the JSON line to extract URI and name
+    uri=$(echo "$line" | sed -n 's/.*"uri":"\([^"]*\)".*/\1/p')
+    name=$(echo "$line" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')
+
+    if [ -z "$name" ]; then
+        name="Unknown Server" # Default name if not provided
+    fi
+
+    echo "Processing URI: $uri (Server Name: $name)"
+    get_collection_sizes "$uri" "$name"
+done
+
+echo "Report complete. Results saved to $OUTPUT_FILE"
