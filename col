@@ -1,0 +1,26 @@
+#!/bin/bash
+
+MONGO_URI="mongodb://localhost:27017"  # Replace with your actual URI
+SERVER_NAME=$(hostname)
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+# Get the list of databases excluding system DBs
+databases=$(mongosh "$MONGO_URI" --quiet --eval '
+db.adminCommand("listDatabases").databases
+    .map(db => db.name)
+    .filter(name => !["admin", "local", "config"].includes(name))
+    .join("\n")
+')
+
+# Print CSV header
+echo "time,servername,dbname,collectionname,collectionsize,indexsize"
+
+# Loop through each DB
+for dbname in $databases; do
+  mongosh "$MONGO_URI/$dbname" --quiet --eval "
+    db.getCollectionNames().forEach(function(collection) {
+      var stats = db.getCollection(collection).stats();
+      print('$TIMESTAMP,$SERVER_NAME,$dbname,' + collection + ',' + stats.size + ',' + stats.totalIndexSize);
+    });
+  "
+done
