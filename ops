@@ -20,6 +20,16 @@ ops.inprog.forEach(function(op) {
       return (obj && obj.hasOwnProperty(key)) ? obj[key] : null;
     }, op);
     
+    // Special handling for command field
+    if (field === "command" && value !== null && value !== undefined) {
+      // Convert command to JSON string and truncate to 500 chars
+      try {
+        value = JSON.stringify(value).substring(0, 500);
+      } catch(e) {
+        value = value.toString().substring(0, 500);
+      }
+    }
+    
     // Convert to string and replace null/undefined with "NA"
     var strValue = (value === null || value === undefined) ? "NA" : value.toString();
     
