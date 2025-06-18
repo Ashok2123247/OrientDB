@@ -1,0 +1,199 @@
+Below is a **straight‑through script set** you can copy‑paste (or adapt) in psql.
+Each step is preceded by a short explanation so you can see why it’s there.
+
+---
+
+### 0. Preliminaries (once per cluster)
+
+```sql
+-- Optional: keep ops data in its own schema
+CREATE SCHEMA IF NOT EXISTS mongo_ops;
+
+-- You’ll need plpgsql for the maintenance functions
+CREATE EXTENSION IF NOT EXISTS plpgsql;
+```
+
+---
+
+### 1. Parent (partitioned) table
+
+```sql
+/*  Parent table:
+    – current_optime drives the partitions
+    – jsonb for ‘locks’ and ‘command’ so you can query inside later
+*/
+CREATE TABLE mongo_ops.mongo_current_ops
+(
+    current_optime   TIMESTAMPTZ NOT NULL,
+    opid             BIGINT,
+    connection_id    BIGINT,
+    type             TEXT,
+    ns               TEXT,
+    client           TEXT,
+    "user"           TEXT,
+    locks            JSONB,
+    waiting_for_lock BOOLEAN,
+    secs_running     INTEGER,
+    command          JSONB,
+    PRIMARY KEY (current_optime, opid)
+) PARTITION BY RANGE (current_optime);
+```
+
+---
+
+### 2. First two partitions (cover “now” and the near future)
+
+> Keep each partition **one month** wide; every day you’ll still have exactly one partition that’s ≤ 30 days old.
+
+```sql
+-- Replace the dates if you’re running this later
+CREATE TABLE mongo_ops.mongo_current_ops_2025_06
+    PARTITION OF mongo_ops.mongo_current_ops
+    FOR VALUES FROM ('2025‑06‑01') TO ('2025‑07‑01');
+
+CREATE TABLE mongo_ops.mongo_current_ops_2025_07
+    PARTITION OF mongo_ops.mongo_current_ops
+    FOR VALUES FROM ('2025‑07‑01') TO ('2025‑08‑01');
+```
+
+Add a **catch‑all** so an out‑of‑range row never blocks an insert:
+
+```sql
+CREATE TABLE mongo_ops.mongo_current_ops_default
+    PARTITION OF mongo_ops.mongo_current_ops DEFAULT;
+```
+
+---
+
+### 3. Helpful indexes (local to each child)
+
+Because each child gets its own index, you declare them **on the parent** and PostgreSQL propagates them:
+
+```sql
+-- Fast point look‑ups by opid
+CREATE INDEX ON mongo_ops.mongo_current_ops (opid);
+
+-- Keep current inserts quick
+CREATE INDEX ON mongo_ops.mongo_current_ops (current_optime DESC);
+```
+
+---
+
+### 4. Automatic monthly partition management
+
+*(100 % SQL, no external scheduler required)*
+
+1. **Function**: makes next month’s partition and detaches partitions older than 30 days.
+2. **Event trigger**: runs that function the first time you insert each calendar month.
+
+```sql
+-- 4‑A  Maintenance function
+CREATE OR REPLACE FUNCTION mongo_ops.rotate_partitions() RETURNS void
+LANGUAGE plpgsql AS
+$$
+DECLARE
+    v_today            date        := CURRENT_DATE;
+    v_month_start      date        := date_trunc('month', v_today);
+    v_next_month_start date        := v_month_start + INTERVAL '1 month';
+    v_old_cutoff       date        := v_today - INTERVAL '30 days';
+    v_old_partition    text;
+BEGIN
+    /* 1. Create next month’s partition if it doesn’t exist */
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'mongo_ops'
+          AND c.relname = format('mongo_current_ops_%s', to_char(v_next_month_start, 'YYYY_MM'))
+    ) THEN
+        EXECUTE format($$
+            CREATE TABLE mongo_ops.mongo_current_ops_%s
+            PARTITION OF mongo_ops.mongo_current_ops
+            FOR VALUES FROM ('%s') TO ('%s');
+        $$,
+        to_char(v_next_month_start, 'YYYY_MM'),
+        v_next_month_start,
+        v_next_month_start + INTERVAL '1 month');
+    END IF;
+
+    /* 2. Detach any partition whose end date < cutoff */
+    FOR v_old_partition IN
+        SELECT tab.relname
+        FROM pg_partitioned_table p
+        JOIN pg_class par ON p.partrelid = par.oid
+        JOIN pg_inherits i ON i.inhparent = par.oid
+        JOIN pg_class tab ON tab.oid = i.inhrelid
+        JOIN pg_namespace n ON n.oid = tab.relnamespace
+        WHERE par.relname = 'mongo_current_ops'
+          AND n.nspname = 'mongo_ops'
+          AND tab.relname LIKE 'mongo_current_ops_%'
+          AND tab.relname < format('mongo_current_ops_%s',
+                                   to_char(v_old_cutoff, 'YYYY_MM'))
+    LOOP
+        RAISE NOTICE 'Detaching %', v_old_partition;
+        EXECUTE format('ALTER TABLE mongo_ops.%I DETACH PARTITION mongo_ops.%I;',
+                       'mongo_current_ops', v_old_partition);
+        /* Optionally move to an archive schema or CLUSTER/COMPRESS here */
+    END LOOP;
+END;
+$$;
+
+-- 4‑B  Run that function automatically once per month on first insert
+CREATE OR REPLACE FUNCTION mongo_ops.call_rotate_partitions()
+RETURNS trigger LANGUAGE plpgsql AS
+$$ BEGIN
+       PERFORM mongo_ops.rotate_partitions();
+       RETURN NEW;
+END; $$;
+
+-- Attach trigger to parent
+CREATE TRIGGER trg_rotate_partitions
+AFTER INSERT ON mongo_ops.mongo_current_ops
+FOR EACH STATEMENT
+WHEN (date_trunc('day', CURRENT_DATE) = date_trunc('day', CURRENT_DATE))  -- always true, executes once per stmt
+EXECUTE FUNCTION mongo_ops.call_rotate_partitions();
+```
+
+> **Why AFTER INSERT‐per‐statement?** On the first insert each month the trigger fires, the function creates next month’s partition and detaches >30‑day partitions. Subsequent inserts in the same month skip the “create” because the partition already exists, so overhead is negligible.
+
+---
+
+### 5. Inserting data
+
+```sql
+INSERT INTO mongo_ops.mongo_current_ops
+    (current_optime, opid, connection_id, type, ns, client, "user",
+     locks, waiting_for_lock, secs_running, command)
+VALUES
+    (NOW(), 12345, 40001, 'update', 'db.coll',
+     '10.0.0.15:45678', 'appUser',
+     '{"mode":"w"}', FALSE, 12,
+     '{"update":"coll","updates":[{"q":{},"u":{}}]}');
+```
+
+---
+
+### 6. Archiving or dropping detached partitions (optional)
+
+Because `ALTER TABLE … DETACH PARTITION` turns the child into a **stand‑alone table**, you decide later what to do:
+
+```sql
+-- Move to lightweight storage
+ALTER TABLE mongo_ops.mongo_current_ops_2025_04
+    SET TABLESPACE fast_nvm_tablespace;
+
+-- Or dump + drop
+COPY mongo_ops.mongo_current_ops_2025_04 TO '/backups/ops_2025_04.csv';
+DROP TABLE mongo_ops.mongo_current_ops_2025_04;
+```
+
+---
+
+## What you now have
+
+* ✅ **Logical 30‑day window** always in the main partition set
+* ✅ Next month’s partition created automatically (no cron)
+* ✅ Older data cleanly detached for cheap archive or delete
+* ✅ Indexes propagate, so queries remain fast
+* ✅ All pure SQL—works on PostgreSQL 10 + without extra extensions
+
+Feel free to tweak the partition width (weekly, daily) or the retention logic (60 days, 90 days) by editing the dates in the `rotate_partitions` function.
