@@ -45,6 +45,14 @@ Best regards,
 Ashok
 
 
+The observed slowdown after the MongoDB restart is primarily due to the database's in-memory cache clearing, requiring a warm-up period.
+
+Before Restart: ~30 GB of data was cached in memory, ensuring fast query responses.
+
+After Restart: The cache started near empty (~0.234 GB), leading to more disk reads and slower initial performance, with increased dirty pages (1GB) and write queue spikes as the system works to catch up.
+
+Performance is expected to improve as the cache repopulates.
+
 ---
 
 Let me know if you want to add cost considerations or performance benchmarking insights.
