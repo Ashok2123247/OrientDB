@@ -1,0 +1,67 @@
+/**
+ * Script to check and fix MongoDB user permissions
+ * Usage: mongosh --host <hostname> --port <port> -u adminUser -p adminPassword --authenticationDatabase admin thisScript.js
+ */
+
+// Configuration - modify these values
+const targetUser = "x";               // The user to check
+const targetDatabase = "db1";         // The database to check permissions on
+const requiredRoles = [               // List of required roles for the user
+    { role: "readWrite", db: targetDatabase },
+    // Add other required roles as needed
+    // Example: { role: "dbAdmin", db: targetDatabase }
+];
+
+// Connect to the admin database to check user privileges
+const adminDb = db.getSiblingDB("admin");
+
+try {
+    // Get the user's current roles on the target database
+    const userInfo = adminDb.getUser(targetUser);
+    const currentRoles = userInfo.roles.filter(role => role.db === targetDatabase);
+    
+    // Check if all required roles are present
+    let missingRoles = [];
+    
+    for (const requiredRole of requiredRoles) {
+        const hasRole = currentRoles.some(
+            role => role.role === requiredRole.role && role.db === requiredRole.db
+        );
+        
+        if (!hasRole) {
+            missingRoles.push(requiredRole);
+            print(`Missing role: ${requiredRole.role} on ${requiredRole.db}`);
+        }
+    }
+    
+    // Grant missing roles if any are found
+    if (missingRoles.length > 0) {
+        print(`Granting ${missingRoles.length} missing roles to user ${targetUser}...`);
+        
+        adminDb.grantRolesToUser(targetUser, missingRoles);
+        
+        // Verify the roles were granted
+        const updatedUserInfo = adminDb.getUser(targetUser);
+        const updatedRoles = updatedUserInfo.roles.filter(role => role.db === targetDatabase);
+        
+        for (const role of missingRoles) {
+            const hasRole = updatedRoles.some(
+                r => r.role === role.role && r.db === role.db
+            );
+            
+            if (hasRole) {
+                print(`Successfully granted role: ${role.role} on ${role.db}`);
+            } else {
+                print(`Failed to grant role: ${role.role} on ${role.db}`);
+            }
+        }
+    } else {
+        print(`User ${targetUser} has all required roles on database ${targetDatabase}`);
+    }
+} catch (e) {
+    if (e.codeName === "UserNotFound") {
+        print(`Error: User ${targetUser} does not exist`);
+    } else {
+        print(`Error: ${e}`);
+    }
+}
