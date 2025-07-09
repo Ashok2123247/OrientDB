@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# Configuration
+NEO4J_SERVICE="neo4j"
+BACKUP_DIR="/opt/backups/neo4j"
+DATE=$(date +%F_%H-%M-%S)
+DUMP_PATH="$BACKUP_DIR/neo4j-dump-$DATE.dump"
+LOG_FILE="/var/log/neo4j_backup_$DATE.log"
+NEO4J_USER="neo4j"  # Owner of the Neo4j process
+NEO4J_BIN="/var/lib/neo4j/bin"  # Adjust if neo4j-admin is in a different path
+
+echo "==== Neo4j Backup Script Started: $DATE ====" | tee -a $LOG_FILE
+
+# Step 1: Stop Neo4j service
+echo "[1/5] Stopping Neo4j service..." | tee -a $LOG_FILE
+sudo systemctl stop $NEO4J_SERVICE
+sleep 5
+
+# Step 2: Validate stop
+if systemctl is-active --quiet $NEO4J_SERVICE; then
+    echo "ERROR: Neo4j service failed to stop." | tee -a $LOG_FILE
+    exit 1
+fi
+
+# Step 3: Run neo4j-admin dump
+echo "[2/5] Creating database dump using neo4j-admin..." | tee -a $LOG_FILE
+mkdir -p "$BACKUP_DIR"
+sudo -u $NEO4J_USER $NEO4J_BIN/neo4j-admin database dump neo4j --to-path="$DUMP_PATH"
+if [ $? -ne 0 ]; then
+    echo "ERROR: neo4j-admin dump failed." | tee -a $LOG_FILE
+    exit 1
+fi
+
+# Step 4: Start Neo4j service
+echo "[3/5] Starting Neo4j service..." | tee -a $LOG_FILE
+sudo systemctl start $NEO4J_SERVICE
+sleep 10
+
+# Step 5: Basic health check
+echo "[4/5] Checking Neo4j port..." | tee -a $LOG_FILE
+if nc -z localhost 7474; then
+    echo "Neo4j is running and listening on port 7474." | tee -a $LOG_FILE
+else
+    echo "ERROR: Neo4j port check failed." | tee -a $LOG_FILE
+    exit 1
+fi
+
+echo "[5/5] Checking recent Neo4j logs..." | tee -a $LOG_FILE
+sudo tail -n 50 /var/log/neo4j/neo4j.log | tee -a $LOG_FILE
+
+echo "==== Backup Completed Successfully: $DUMP_PATH ====" | tee -a $LOG_FILE
