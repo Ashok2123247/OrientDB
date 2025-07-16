@@ -1,0 +1,146 @@
+Below is a clear and simplified documentation for installing **Neo4j** on a **CentOS** server, using **`/Data` drive** as the default path for all Neo4j files.
+
+---
+
+# **Neo4j Installation on CentOS (with /Data as Default Path)**
+
+---
+
+## **1. Pre-requisites**
+
+Before installing Neo4j, ensure the following:
+
+* OS: CentOS 7 or 8
+* Java 11 or higher
+* Root/sudo access
+* Sufficient disk space under `/Data`
+
+### **Install Java**
+
+```bash
+sudo yum install java-11-openjdk -y
+```
+
+---
+
+## **2. Download and Extract Neo4j**
+
+### **Step 1: Create a Neo4j Base Directory**
+
+```bash
+sudo mkdir -p /Data/neo4j
+cd /Data/neo4j
+```
+
+### **Step 2: Download Neo4j Community Edition**
+
+```bash
+wget https://dist.neo4j.com/community/neo4j-community-5.20.0-unix.tar.gz
+```
+
+*(You can check the latest version from [https://neo4j.com/download-center/](https://neo4j.com/download-center/))*
+
+### **Step 3: Extract the Archive**
+
+```bash
+tar -xzf neo4j-community-5.20.0-unix.tar.gz
+mv neo4j-community-5.20.0 neo4j
+```
+
+Now, your Neo4j home is: `/Data/neo4j/neo4j`
+
+---
+
+## **3. Set Permissions**
+
+```bash
+sudo chown -R $(whoami):$(whoami) /Data/neo4j
+```
+
+---
+
+## **4. Configure Neo4j**
+
+Edit the configuration file:
+
+```bash
+nano /Data/neo4j/neo4j/conf/neo4j.conf
+```
+
+Update or uncomment the following lines:
+
+```ini
+# Allow remote access
+dbms.default_listen_address=0.0.0.0
+dbms.default_advertised_address=your_server_ip
+
+# Specify data and log directories under /Data
+dbms.directories.data=/Data/neo4j/data
+dbms.directories.logs=/Data/neo4j/logs
+```
+
+---
+
+## **5. Start Neo4j**
+
+Navigate to the Neo4j bin directory:
+
+```bash
+cd /Data/neo4j/neo4j/bin
+```
+
+Start Neo4j in background:
+
+```bash
+./neo4j start
+```
+
+To check status:
+
+```bash
+./neo4j status
+```
+
+---
+
+## **6. Access Neo4j Browser**
+
+### **From Web Browser:**
+
+Open:
+
+```
+http://your_server_ip:7474
+```
+
+* **Username**: neo4j
+* **Password**: You will be prompted to set a new password on first login.
+
+---
+
+## **7. Allow Port in Firewall (if enabled)**
+
+```bash
+sudo firewall-cmd --add-port=7474/tcp --permanent
+sudo firewall-cmd --add-port=7687/tcp --permanent
+sudo firewall-cmd --reload
+```
+
+---
+
+## **8. Stop Neo4j (if needed)**
+
+```bash
+cd /Data/neo4j/neo4j/bin
+./neo4j stop
+```
+
+---
+
+## **Conclusion**
+
+Neo4j is now installed and accessible via your browser. All data, logs, and configs are under the `/Data` directory, as intended.
+
+---
+
+Would you like a systemd service setup as the next step?
