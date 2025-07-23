@@ -1,0 +1,23 @@
+// Super simple version that just returns usernames with the role
+function findUsersByRoleSimple(roleName, dbName) {
+    const targetDB = db.getSiblingDB(dbName || 'admin');
+    const allUsers = targetDB.getUsers();
+    
+    let usernames = [];
+    
+    for (let i = 0; i < allUsers.length; i++) {
+        const user = allUsers[i];
+        
+        for (let j = 0; j < user.roles.length; j++) {
+            const role = user.roles[j];
+            const actualRoleName = (typeof role.role === 'object') ? role.role.role : role.role;
+            
+            if (actualRoleName === roleName) {
+                usernames.push(user.user);
+                break; // No need to check other roles for this user
+            }
+        }
+    }
+    
+    return usernames;
+}
