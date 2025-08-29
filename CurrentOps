@@ -1,75 +1,129 @@
-You've hit upon a very common and important distinction when monitoring MongoDB performance! The difference between `db.currentOp()` output and what you see in the MongoDB logs (specifically, the slow query log) is fundamental to understanding your database's workload.
+Here are two formal options for your requirement. Both scripts query **SQL Server DMV data** to capture **Page Life Expectancy (PLE)** and **RESOURCE\_SEMAPHORE waits** in the last 1 minute to assess memory pressure.
 
-Here's a breakdown of the differences and why you might observe that discrepancy:
+---
 
-### `db.currentOp()` (or `$currentOp` aggregation stage)
+## **Option 1: DMV-based Snapshot with Delta Calculation**
 
-* **What it shows:** `db.currentOp()` provides a snapshot of **currently running operations** on the MongoDB instance at the exact moment you execute the command. This includes queries, write operations, index builds, aggregations, and more.
-* **Real-time:** It's designed for real-time monitoring and troubleshooting. You're seeing what the database is doing *right now*.
-* **Duration:** The `secs_running` field (or similar) in `currentOp` indicates how long the operation has been running *up to that point*.
-* **Transient Nature:** If a query finishes quickly, you might not catch it with `currentOp()` unless you run the command precisely when it's active. This is why you might not see many long-running queries if they are intermittent or complete before you check.
-* **Purpose:** Primarily for identifying active bottlenecks, resource contention (locks), and queries that are currently consuming significant resources.
+This script collects current values, waits 1 minute, recollects, and then calculates averages.
 
-**Output Structure (Key Fields):**
+```sql
+-- Script: Memory Pressure Check using DMV snapshots
+SET NOCOUNT ON;
 
-While the full output can be extensive, here are some key fields you'd typically look for:
+-- First snapshot
+IF OBJECT_ID('tempdb..#memcheck') IS NOT NULL DROP TABLE #memcheck;
+CREATE TABLE #memcheck
+(
+    snapshot_time DATETIME,
+    ple_value BIGINT,
+    wait_time_ms BIGINT,
+    waiting_tasks BIGINT
+);
 
-* `opid`: Unique identifier for the operation.
-* `active`: Boolean, `true` if the operation is currently active.
-* `op`: Type of operation (e.g., "query", "insert", "update", "remove", "command", "getmore", "none" for idle cursors/sessions).
-* `ns`: Namespace (database.collection) the operation is targeting.
-* `secs_running`: Number of seconds the operation has been running.
-* `waitingForLock`: Boolean, `true` if the operation is waiting for a lock.
-* `command`: The actual command or query being executed.
-* `planSummary`: A high-level summary of the query plan.
-* `client`: Client IP address and port.
+INSERT INTO #memcheck
+SELECT 
+    GETDATE() AS snapshot_time,
+    cntr_value AS ple_value,
+    ws.wait_time_ms,
+    ws.waiting_tasks_count
+FROM sys.dm_os_performance_counters pc
+LEFT JOIN sys.dm_os_wait_stats ws 
+    ON ws.wait_type = 'RESOURCE_SEMAPHORE'
+WHERE pc.counter_name = 'Page life expectancy'
+  AND pc.object_name LIKE '%Buffer Manager%';
 
-### MongoDB Logs (Slow Query Log)
+-- Wait for 1 minute
+WAITFOR DELAY '00:01:00';
 
-* **What it shows:** The MongoDB server logs (specifically, when you enable database profiling or if a query exceeds the `slowOpThresholdMs`) record **completed operations** that meet certain criteria (e.g., duration longer than `slowOpThresholdMs`).
-* **Historical Record:** It's a historical record of operations that have already finished.
-* **Duration:** The `durationMillis` (or `millis`) field in the log entry indicates the **total time** the operation took from start to finish.
-* **Persistence:** Once an operation is logged, it remains in the log file (until log rotation or disk space limits). This is why you can see queries that ran for 10+ minutes, even if they are no longer active.
-* **Purpose:** Ideal for identifying recurring slow queries, understanding overall query performance trends, and pinpointing queries that might need indexing or optimization.
+-- Second snapshot
+INSERT INTO #memcheck
+SELECT 
+    GETDATE() AS snapshot_time,
+    cntr_value AS ple_value,
+    ws.wait_time_ms,
+    ws.waiting_tasks_count
+FROM sys.dm_os_performance_counters pc
+LEFT JOIN sys.dm_os_wait_stats ws 
+    ON ws.wait_type = 'RESOURCE_SEMAPHORE'
+WHERE pc.counter_name = 'Page life expectancy'
+  AND pc.object_name LIKE '%Buffer Manager%';
 
-**Output Structure (Key Fields for Slow Queries):**
+-- Calculate deltas in last 1 min
+;WITH cte AS
+(
+    SELECT 
+        MIN(snapshot_time) AS start_time,
+        MAX(snapshot_time) AS end_time,
+        MAX(ple_value) - MIN(ple_value) AS ple_change,
+        MAX(wait_time_ms) - MIN(wait_time_ms) AS wait_ms_change,
+        MAX(waiting_tasks) - MIN(waiting_tasks) AS waiting_tasks_change
+    FROM #memcheck
+)
+SELECT 
+    start_time, 
+    end_time,
+    ple_change AS PLE_Delta,
+    wait_ms_change AS WaitTimeMs_Delta,
+    waiting_tasks_change AS WaitingTasks_Delta,
+    CASE 
+        WHEN ple_change < 0 OR waiting_tasks_change > 0 THEN 'Possible Memory Pressure'
+        ELSE 'No Significant Memory Pressure'
+    END AS MemoryPressureStatus
+FROM cte;
+```
 
-MongoDB logs are typically in structured JSON format since version 3.2. For a slow query, you'd commonly find:
+✅ **Best for automation jobs (SQL Agent) – compares delta in PLE & semaphore waits.**
 
-* `t`: Timestamp of the log message.
-* `s`: Severity (e.g., "I" for informational, "W" for warning, "E" for error).
-* `c`: Component (e.g., "COMMAND").
-* `id`: Unique identifier for the log statement.
-* `ctx`: Name of the thread that caused the log statement.
-* `msg`: Log message, often containing details about the operation.
-* `attr`: An object containing additional attributes, which for slow queries would include:
-    * `command`: The full command object.
-    * `planSummary`: Summary of the execution plan (e.g., `COLLSCAN` for collection scan, `IXSCAN` for index scan).
-    * `keysExamined`: Number of index keys scanned.
-    * `docsExamined`: Number of documents scanned.
-    * `nreturned`: Number of documents returned.
-    * `durationMillis`: The total duration of the operation in milliseconds.
+---
 
-### Why the Discrepancy (1 min in `currentOp` vs. 10 min in logs)?
+## **Option 2: Real-Time Aggregated Query (1 Minute Window Using sys.dm\_exec\_requests + sys.dm\_os\_waiting\_tasks)**
 
-This is the core of your observation and perfectly normal:
+Instead of waiting, you can calculate average semaphore waits within the last minute by joining request data.
 
-1.  **`currentOp` is a snapshot:** If you run `db.currentOp()` and a query has been running for 59 seconds, you'll see `secs_running: 59`. If that same query then continues to run for another 9 minutes and 1 second (total 10 minutes), and you *don't* run `currentOp()` again during that time, you won't see its 10-minute duration in `currentOp`. You would only see it in `currentOp` if you happened to catch it *while* it was running for that extended period.
-2.  **Logs record completion:** The slow query log, on the other hand, records queries *after* they have completed and if their total execution time exceeded the `slowOpThresholdMs`. So, that 10-minute query will definitively appear in the logs once it's done, because its total duration exceeded the threshold.
-3.  **Thresholds:** MongoDB's profiler (which dictates what goes into the slow query log) has a `slowOpThresholdMs` setting (default 100ms). Only operations exceeding this threshold are logged. `currentOp` shows *all* active operations (or those matching your filter), regardless of duration (unless you specifically filter by `secs_running`).
+```sql
+-- Script: Real-time Memory Pressure Indicators
+SET NOCOUNT ON;
 
-### How MongoDB Handles These Types of Queries (Long-Running Queries)
+-- Current PLE
+SELECT 
+    GETDATE() AS CheckTime,
+    cntr_value AS PLE_Value
+FROM sys.dm_os_performance_counters
+WHERE counter_name = 'Page life expectancy'
+  AND object_name LIKE '%Buffer Manager%';
 
-MongoDB handles long-running queries by:
+-- Average Resource Semaphore waits in last 1 min
+;WITH waits AS
+(
+    SELECT 
+        wait_type,
+        wait_time_ms,
+        signal_wait_time_ms,
+        waiting_tasks_count,
+        (wait_time_ms / NULLIF(waiting_tasks_count,0)) AS AvgWaitPerTask
+    FROM sys.dm_os_wait_stats
+    WHERE wait_type = 'RESOURCE_SEMAPHORE'
+)
+SELECT 
+    GETDATE() AS CheckTime,
+    wait_type,
+    wait_time_ms,
+    waiting_tasks_count,
+    AvgWaitPerTask,
+    CASE 
+        WHEN AvgWaitPerTask > 1000 THEN 'Potential Memory Pressure'
+        ELSE 'Normal'
+    END AS MemoryPressureStatus
+FROM waits;
+```
 
-1.  **Yielding:** MongoDB's WiredTiger storage engine uses a document-level locking mechanism. When an operation needs to access data that isn't in memory, or if it's performing a long operation that could block others, it can **yield** its lock. This allows other operations to run concurrently, improving overall throughput. While the query is yielding, it's still considered "running" but not actively holding a lock that blocks other operations on unrelated data.
-2.  **Concurrency Control:** MongoDB's concurrency model (optimistic concurrency control with document-level locking) aims to maximize concurrent operations. Long-running reads (queries) generally do not block writes on the same collection unless they are doing a full collection scan which might acquire a collection-level lock. Writes can block other writes or even reads if they modify the same documents or if they need certain metadata locks.
-3.  **Resource Consumption:** Long-running queries can consume significant resources (CPU, I/O, memory) on the server. If they are inefficient (e.g., doing collection scans instead of using indexes), they can degrade overall database performance for other operations.
-4.  **`maxTimeMS`:** You can set a `maxTimeMS` for queries to specify a time limit for server-side execution. If the operation exceeds this limit, MongoDB aborts the operation. This is a crucial mechanism to prevent runaway queries from overwhelming the system.
+✅ **Best for quick monitoring or integrating into a monitoring system.**
 
-### In Summary:
+---
 
-* **`db.currentOp()`:** Your "real-time dashboard" for what's happening *now*. Great for immediate troubleshooting and seeing if something is currently stuck or consuming resources.
-* **MongoDB Logs (Slow Query Log):** Your "historical record" for what *has happened*. Essential for long-term performance analysis, identifying patterns of slow queries, and validating optimizations.
+👉 Recommendation:
 
-The 1-minute vs. 10-minute discrepancy simply highlights that `currentOp` is dynamic and reflects the instantaneous state, while logs capture the completed journey of a slow operation. To truly diagnose and optimize, you need to use both in conjunction.
+* Use **Option 1** if you want a **trend/delta analysis** every 1 minute.
+* Use **Option 2** if you need **real-time snapshots** integrated into monitoring (like Grafana, custom dashboards, or alerts).
+
+Would you like me to **combine both scripts into one procedure** that logs results to a table for continuous tracking of memory pressure trends?
