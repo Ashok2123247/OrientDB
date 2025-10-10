@@ -1,0 +1,25 @@
+# Variables
+SRC_ARCHIVE="/path/to/system.buckets.sensor_data.gz"    # use your actual gz file
+SRC_DB="source_db"
+SRC_COLL="sensor_data"
+TGT_DB="tempdb"
+
+mongorestore \
+  --gzip \
+  --archive="$SRC_ARCHIVE" \
+  --uri="mongodb://targethost:27017" \
+  --nsInclude="$SRC_DB.system.buckets.$SRC_COLL" \
+  --nsFrom="$SRC_DB.system.buckets.$SRC_COLL" \
+  --nsTo="$TGT_DB.system.buckets.$SRC_COLL"
+
+
+
+
+mongorestore \
+  --gzip \
+  --dir="/path/to/dump" \
+  --uri="mongodb://targethost:27017" \
+  --nsInclude="$SRC_DB.system.buckets.$SRC_COLL" \
+  --nsFrom="$SRC_DB.system.buckets.$SRC_COLL" \
+  --nsTo="$TGT_DB.system.buckets.$SRC_COLL"
+
