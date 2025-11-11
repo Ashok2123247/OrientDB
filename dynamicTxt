@@ -1,0 +1,126 @@
+
+## Datasource > SQL Server
+## Format > Table
+## Visualiation > Dynamic Text
+
+Options:
+	Render Template > all rows
+	CSS > Yes
+	Editor > HTML
+	Content > Enable
+<table class="TABLE">
+  <tr>
+    <th class="TH">SourceServer</th>
+    <th class="TH">TOTaskNameTALCOUNT</th>
+    <th class="TH">TaskStartTime_IST</th>
+    <th class="TH">TaskEndTime_IST</th>
+    <th class="TH">TaskStartTime_CDT</th>
+    <th class="TH">TaskEndTime_CDT</th>
+    <th class="TH">Duration_Min</th>
+  </tr>
+  {{#each data}}
+  <tr>
+    <td class="TD">{{SourceServer}}</td>
+    <td class="TD">{{TaskName}}</td>
+    <td class="TD">{{TaskStartTime_IST}}</td>
+    <td class="TD">{{TaskEndTime_IST}}</td>
+    <td class="TD">{{TaskStartTime_CDT}}</td>
+    <td class="TD">{{TaskEndTime_CDT}}</td>
+    <td class="TD">{{Duration_Min}}</td>
+  </tr>
+  {{/each}}
+</table>	
+
+CSS >
+
+ &{
+.TABLE{width:100%;border-width: 1px;border-style: solid;border-color: black;border-collapse: collapse;font:1em/145% Segoe UI,helvetica,Segoe UI,Segoe UI;}
+.TH{border-width: 1px;padding: 3px;border-style: solid;border-color: black;background-color:#778899}
+.TD{border-width: 1px;padding: 3px;border-style: solid;border-color: black;}
+}
+	
+## SQL Query
+SELECT top 1
+	   [Host_Name] as SourceServer
+    ,[TaskName]
+	  ,convert(varchar,(switchoffset(todatetimeoffset([TaskStartTime], '-05:00'), '+05:30')),22) as [TaskStartTime_IST]
+	  ,convert(varchar,(switchoffset(todatetimeoffset([TaskEndTime], '-05:00'), '+05:30')),22) as [TaskEndTime_IST]
+	  ,[TaskStartTime] as [TaskStartTime_CDT]
+	  ,[TaskEndTime] as [TaskEndTime_CDT]
+	  ,TaskDuration [Duration_Min]
+FROM [DbSQLMonitoring].[dbo].[tbl_dc_maint_task4allTech]
+
+
+
+
+## REFERNCE
+if((select LEN(DATABASE_NAME) FROM [ctrplorsprd19]..[DB_TUNING].[DATABASE_LIST] where DATABASE_NAME in ('$TuneDB')) > 1)
+SELECT upper(' $DBName ') as dbname, 'Database is onboarded in' as text, '1' as tune,'https://db-tuning-advisor-ui-uat.pnp1.pcf.dell.com/Detail?dbname=$TuneDB' as link
+ELSE 
+SELECT upper(' $DBName ') as dbname, 'Database is not yet onboarded in' as text, '0' as tune,'https://db-tuning-advisor-ui-uat.pnp1.pcf.dell.com/Detail?dbname=$DBName' as link 
+
+
+{{#if (eq tune '0')}}
+  <h1 class = "TDRed"><strong>{{dbname}}</strong>: {{text}} <a href="{{link}}"; class = "TDRedlink"><u>Tuning Advisor</u></a></h1>
+{{else}}
+  <h1 class = "TDGreen"><strong>{{dbname}}</strong>: {{text}} <a href="{{link}}"; class = "TDGreenlink"><u>Tuning Advisor</u></a>
+  <br><br><p class = "p1">For the database onboarded in Tuning Advisor, you can get tuning recommendation from the Tuning Advisor for the specific SQL statement 
+  (PL SQL stored programs not included) by clicking on the SQL_ID in the SQL Statement Query performance Metrics Details table below. 
+  You may also explore other features of Tuning Advisor from link above.</p></h1>
+{{/if}}
+
+
+
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Age</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{#each data as row}}
+    <tr>
+      <td>{{row.name}}</td>
+      <td>
+        <span class="loading" style="display: {{#if row.age === null}}inline{{else}}none{{/if}};">{{loading_text}}</span>
+        <span style="display: {{#if row.age !== null}}inline{{else}}none{{/if}};">{{row.age}}</span>
+      </td>
+    </tr>
+    {{/each}}
+  </tbody>
+</table>
+
+<style>
+  .data-table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+  }
+  .loading {
+    color: gray;
+    font-style: italic;
+  }
+</style>
+
+
+
+  Markdown: https://commonmark.org/help/
+Helpers: https://volkovlabs.io/plugins/volkovlabs-dynamictext-panel/helpers/
+Recipes: https://volkovlabs.io/plugins/volkovlabs-dynamictext-panel/recipes/
+Dynamic Text panels : https://volkovlabs.io/plugins/volkovlabs-dynamictext-panel/
+
+
+
+
+
+
+
+
+
+
