@@ -23,3 +23,59 @@ mongorestore \
   --nsFrom="$SRC_DB.system.buckets.$SRC_COLL" \
   --nsTo="$TGT_DB.system.buckets.$SRC_COLL"
 
+
+
+// MongoDB script to get detailed index information
+// Run in Mongo Shell or mongosh
+
+const dbName = "yourDatabase";
+const collName = "yourCollection";
+
+const dbObj = db.getSiblingDB(dbName);
+const coll = dbObj.getCollection(collName);
+
+// Get all index details
+const indexStats = coll.aggregate([
+  { $indexStats: {} },
+  {
+    $project: {
+      name: "$name",
+      accessOps: "$accesses.ops",
+      since: "$accesses.since",
+      host: "$host"
+    }
+  }
+]).toArray();
+
+// Get index size info
+const stats = coll.stats();
+const indexSizes = stats.indexSizes;
+const totalIndexSize = stats.totalIndexSize;
+
+// Get detailed index definitions
+const indexDetails = coll.getIndexes();
+
+// Merge all details
+print(`\nDatabase: ${dbName}`);
+print(`Collection: ${collName}`);
+print(`Total Index Size: ${totalIndexSize} bytes\n`);
+
+indexDetails.forEach(idx => {
+  const usage = indexStats.find(i => i.name === idx.name);
+  const size = indexSizes[idx.name] || 0;
+
+  print(`Index Name      : ${idx.name}`);
+  print(`Key Pattern     : ${tojson(idx.key)}`);
+  print(`Unique          : ${idx.unique || false}`);
+  print(`Sparse          : ${idx.sparse || false}`);
+  print(`TTL             : ${idx.expireAfterSeconds || "N/A"}`);
+  print(`Background      : ${idx.background || false}`);
+  print(`Partial Filter  : ${idx.partialFilterExpression ? tojson(idx.partialFilterExpression) : "N/A"}`);
+  print(`Size (bytes)    : ${size}`);
+  print(`Access Ops      : ${usage ? usage.accessOps : "N/A"}`);
+  print(`Since           : ${usage ? usage.since : "N/A"}`);
+  print(`Host            : ${usage ? usage.host : "N/A"}`);
+  print("-----------------------------------------------------------\n");
+});
+
+
