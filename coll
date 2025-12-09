@@ -79,3 +79,44 @@ indexDetails.forEach(idx => {
 });
 
 
+
+db.users.updateMany(
+  {},
+  [
+    {
+      $set: {
+        preferredPayments: {
+          $switch: {
+            branches: [
+              {
+                case: { $eq: ["$preference.defaultPaymentMethod", "creditcard"] },
+                then: [
+                  { deviceType: "android", paymentMethod: "creditcard" },
+                  { deviceType: "ios",     paymentMethod: "creditcard" }
+                ]
+              },
+              {
+                case: { $eq: ["$preference.defaultPaymentMethod", "gpay"] },
+                then: [
+                  { deviceType: "android", paymentMethod: "gpay" },
+                  { deviceType: "ios",     paymentMethod: "creditcard" }
+                ]
+              },
+              {
+                case: { $eq: ["$preference.defaultPaymentMethod", "applepay"] },
+                then: [
+                  { deviceType: "android", paymentMethod: "creditcard" },
+                  { deviceType: "ios",     paymentMethod: "applepay" }
+                ]
+              }
+            ],
+            default: []
+          }
+        }
+      }
+    }
+  ]
+);
+
+
+
