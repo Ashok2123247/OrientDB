@@ -1,0 +1,127 @@
+ashok,
+
+Below are **only two possible options**, presented in **formal tone**, with the **best approach first**, followed by the **second-best alternative**, specifically tailored for a **1.5 TB SQL Server database in an Always On Availability Group (AOAG) production environment**.
+
+---
+
+## **Option 1 (Best Approach): Partition-Based Archival with SWITCH (Enterprise-Grade and Fastest)**
+
+This is the **recommended and safest method** for very large tables in an AOAG environment.
+
+### **Why this is best**
+
+* Metadata-only operation (near-instant)
+* No row-by-row delete logging
+* Minimal blocking and log generation
+* AOAG-friendly and fully supported
+* Predictable and repeatable
+
+### **High-Level Process**
+
+1. **Partition the source table** (typically by date column).
+2. **Create an archive table** with **identical schema and indexes**.
+3. **SWITCH OUT** the old partition to the archive table.
+4. Optionally **truncate or compress** the archive table.
+5. Rebuild or maintain indexes if needed.
+
+### **Key Benefits**
+
+* Archiving millions of rows completes in **seconds**
+* No long-running DELETE transactions
+* Minimal impact on primary and secondary replicas
+* No blocking of OLTP workload
+
+### **Critical Requirements**
+
+* SQL Server Enterprise Edition
+* Identical table structure between source and archive
+* No foreign keys referencing the table
+* Partition aligned indexes
+
+### **When to Use**
+
+* Tables with date-based retention
+* Large tables (100M+ rows)
+* Strict uptime and performance SLAs
+
+---
+
+## **Option 2 (Second Best): Batch-Based Archival with INSERT + DELETE and Throttling**
+
+Use this **only if partitioning is not possible**.
+
+### **Why production is slow**
+
+* Fully logged DELETE operations
+* Heavy transaction log generation
+* AOAG log redo pressure on secondaries
+* Blocking and lock escalation
+* Resource Governor / I/O throttling differences vs DEV
+
+### **Recommended Implementation**
+
+* Archive data in **small batches**
+* Commit frequently
+* Run during off-peak hours
+* Control log growth and replica lag
+
+### **Example Pattern**
+
+```sql
+WHILE 1 = 1
+BEGIN
+    BEGIN TRAN;
+
+    INSERT INTO ArchiveDB.dbo.Table_Archive (col1, col2, ...)
+    SELECT TOP (10000) col1, col2, ...
+    FROM ProdDB.dbo.Table
+    WHERE ArchiveDate < DATEADD(YEAR, -2, GETDATE())
+    ORDER BY ArchiveDate;
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        COMMIT;
+        BREAK;
+    END
+
+    DELETE TOP (10000)
+    FROM ProdDB.dbo.Table
+    WHERE ArchiveDate < DATEADD(YEAR, -2, GETDATE());
+
+    COMMIT;
+
+    WAITFOR DELAY '00:00:02'; -- Throttling
+END
+```
+
+### **Best Practices**
+
+* Ensure **supporting index** on filter column
+* Disable non-clustered indexes temporarily (if possible)
+* Monitor:
+
+  * Transaction log growth
+  * AG redo queue
+  * Blocking and wait types
+* Avoid running during peak business hours
+
+### **When to Use**
+
+* No Enterprise Edition
+* Table redesign not feasible
+* One-time archival requirement
+
+---
+
+## **Final Recommendation**
+
+* **Choose Option 1** if you can redesign the table once — it will permanently solve performance issues.
+* **Choose Option 2** only as a controlled fallback with strict batching and monitoring.
+
+If you want, I can next provide:
+
+* AOAG-safe **pre/post checks**
+* **Partition design example**
+* **Production-ready batch archival framework with monitoring**
+
+Just tell me which you want.
