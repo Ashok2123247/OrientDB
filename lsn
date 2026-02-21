@@ -39,3 +39,37 @@ SELECT
     END AS LSN_Status
 FROM FullBackup f
 CROSS JOIN LogBackup l;
+
+
+
+
+
+
+
+
+
+
+
+
+DECLARE @DBName SYSNAME = 'YourDatabase';
+
+;WITH LogChain AS
+(
+    SELECT 
+        backup_finish_date,
+        first_lsn,
+        last_lsn,
+        LAG(last_lsn) OVER (ORDER BY backup_finish_date) AS Prev_Last_LSN
+    FROM msdb.dbo.backupset
+    WHERE database_name = @DBName
+      AND type = 'L'
+)
+
+SELECT *,
+       CASE 
+           WHEN Prev_Last_LSN IS NULL THEN 'FIRST LOG BACKUP'
+           WHEN first_lsn = Prev_Last_LSN THEN 'MATCH'
+           ELSE 'LSN GAP - MISMATCH'
+       END AS LSN_Status
+FROM LogChain
+ORDER BY backup_finish_date;
