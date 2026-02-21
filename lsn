@@ -1,0 +1,41 @@
+DECLARE @DBName SYSNAME = 'YourDatabase';
+
+;WITH FullBackup AS
+(
+    SELECT TOP 1
+        database_name,
+        backup_finish_date,
+        checkpoint_lsn,
+        database_backup_lsn
+    FROM msdb.dbo.backupset
+    WHERE database_name = @DBName
+      AND type = 'D'   -- Full Backup
+    ORDER BY backup_finish_date DESC
+),
+LogBackup AS
+(
+    SELECT TOP 1
+        database_name,
+        backup_finish_date,
+        first_lsn,
+        last_lsn,
+        database_backup_lsn
+    FROM msdb.dbo.backupset
+    WHERE database_name = @DBName
+      AND type = 'L'   -- Log Backup
+    ORDER BY backup_finish_date DESC
+)
+
+SELECT 
+    f.database_name,
+    f.checkpoint_lsn      AS Full_Checkpoint_LSN,
+    l.first_lsn           AS Log_First_LSN,
+    l.database_backup_lsn AS Log_Database_Backup_LSN,
+    CASE 
+        WHEN l.database_backup_lsn = f.database_backup_lsn
+             AND l.first_lsn >= f.checkpoint_lsn
+        THEN 'MATCH - Log belongs to this Full backup chain'
+        ELSE 'MISMATCH - Log does NOT belong to this Full backup chain'
+    END AS LSN_Status
+FROM FullBackup f
+CROSS JOIN LogBackup l;
