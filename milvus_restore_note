@@ -1,0 +1,157 @@
+The error:
+
+> `RPC error: insert missed a field 'vector' to collection without set nullable==true or set default_value`
+
+indicates that the restore payload does **not contain the required vector field**, and in Milvus a non-nullable field must always be provided during insert.
+
+Below are the only two correct resolutions.
+
+---
+
+# **Option 1 (Best Practice): Validate and Transform JSON Before Insert**
+
+Most commonly the exported JSON structure is not aligned with Milvus insert format.
+
+Milvus expects:
+
+```python
+[
+  {"id": 1, "vector": [0.1, 0.2, ...]},
+  {"id": 2, "vector": [0.3, 0.4, ...]}
+]
+```
+
+If your backup file looks like:
+
+```python
+{
+  "id": [...],
+  "vector": [...]
+}
+```
+
+or vector field is missing entirely, insert will fail.
+
+---
+
+## ✅ Corrected Restore Script With Field Validation
+
+```python
+from pymilvus import connections, Collection
+import json
+
+def restore_collection():
+    connections.connect("default", host="localhost", port="19530")
+
+    collection = Collection("my_collection")
+    collection.load()
+
+    with open("my_collection_backup.json", "r") as f:
+        data = json.load(f)
+
+    validated_data = []
+    for row in data:
+        if "vector" not in row:
+            raise Exception(f"Missing vector field in record: {row}")
+
+        validated_data.append({
+            "id": row["id"],
+            "vector": row["vector"]
+        })
+
+    batch_size = 1000
+
+    for i in range(0, len(validated_data), batch_size):
+        batch = validated_data[i:i + batch_size]
+        collection.insert(batch)
+
+    collection.flush()
+    print("Restore completed successfully")
+
+if __name__ == "__main__":
+    restore_collection()
+```
+
+---
+
+### Why This Fix Works
+
+* Ensures required vector field exists
+* Matches schema exactly
+* Prevents malformed payload insertion
+* Production-safe validation
+
+---
+
+# **Option 2: Schema Adjustment (Only If Business Allows Nullable Vector)**
+
+If this collection is newly created and you want to allow missing vectors:
+
+```python
+FieldSchema(
+    name="vector",
+    dtype=DataType.FLOAT_VECTOR,
+    dim=128,
+    nullable=True
+)
+```
+
+⚠ This is **not recommended** for production vector workloads because:
+
+* Search operations require vectors
+* Indexing requires vector presence
+* It weakens data integrity
+
+This option is suitable only for:
+
+* Staging environment
+* Partial restore
+* Metadata-only records
+
+---
+
+# Most Likely Root Cause (From DBA Perspective)
+
+Your export script probably used:
+
+```python
+collection.query(expr="id >= 0", output_fields=["*"])
+```
+
+Milvus sometimes excludes vector field unless explicitly requested.
+
+Correct export must include vector field explicitly:
+
+```python
+results = collection.query(
+    expr="id >= 0",
+    output_fields=["id", "vector"]
+)
+```
+
+---
+
+# Recommended Immediate Action
+
+1. Print one record from backup file:
+
+```python
+print(data[0])
+```
+
+2. Verify:
+
+   * `vector` field exists
+   * vector dimension matches schema
+   * no null values
+   * correct data type (list of floats)
+
+---
+
+If you share:
+
+* Your collection schema
+* Sample of one JSON record
+* Milvus version
+
+I will provide a version-specific corrected export + restore pair suitable for production.
