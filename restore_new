@@ -1,0 +1,103 @@
+import time
+from pymilvus import connections, Collection, utility
+
+# --- Configuration ---
+SOURCE_CONFIG = {
+    "uri": "localhost:19530",
+    "db_name": "default",
+    "collection_name": "original_collection"
+}
+
+TARGET_CONFIG = {
+    "uri": "localhost:19530",
+    "db_name": "default",
+    "collection_name": "restored_collection"
+}
+
+def backup_and_restore():
+    # 1. Connect to Milvus
+    connections.connect(alias="default", uri=SOURCE_CONFIG["uri"], db_name=SOURCE_CONFIG["db_name"])
+    
+    if not utility.has_collection(SOURCE_CONFIG["collection_name"]):
+        print(f"Source collection {SOURCE_CONFIG['collection_name']} not found!")
+        return
+
+    # 2. Get Source Collection and Schema
+    src_col = Collection(SOURCE_CONFIG["collection_name"])
+    src_col.load()
+    schema = src_col.schema
+    
+    # Identify the Primary Key field and check if auto_id is enabled
+    pk_field_name = None
+    is_auto_id = False
+    for field in schema.fields:
+        if field.is_primary:
+            pk_field_name = field.name
+            is_auto_id = field.auto_id
+            break
+            
+    all_field_names = [field.name for field in schema.fields]
+    print(f"Detected PK: {pk_field_name} (auto_id={is_auto_id})")
+
+    # 3. Create Target Collection
+    if utility.has_collection(TARGET_CONFIG["collection_name"]):
+        utility.drop_collection(TARGET_CONFIG["collection_name"])
+    
+    dest_col = Collection(name=TARGET_CONFIG["collection_name"], schema=schema)
+    print(f"Created target collection: {TARGET_CONFIG['collection_name']}")
+
+    # 4. Migrate Data
+    print("Fetching data from source...")
+    results = src_col.query(expr="", output_fields=all_field_names)
+    
+    if results:
+        # --- FIX: Remove PK field from results if auto_id is enabled ---
+        if is_auto_id:
+            print(f"Stripping '{pk_field_name}' because auto_id is enabled.")
+            for row in results:
+                row.pop(pk_field_name, None)
+        
+        print(f"Inserting {len(results)} entities...")
+        dest_col.insert(results)
+        dest_col.flush()
+    else:
+        print("No data found in source collection.")
+
+    # 5. Create Specific Index (IVF_FLAT, L2, nlist 128)
+    index_params = {
+        "metric_type": "L2",
+        "index_type": "IVF_FLAT",
+        "params": {"nlist": 128}
+    }
+    
+    print("Creating index on 'embeddings'...")
+    dest_col.create_index(field_name="embeddings", index_params=index_params)
+
+    # 6. Load and Search Test
+    dest_col.load()
+    print("Collection loaded.")
+
+    # Verification: Search using the first vector from the original results
+    if results:
+        # We need the vector from the local 'results' list
+        # Note: If we popped 'embeddings' earlier by mistake (we didn't), 
+        # we'd need to be careful here.
+        search_vector = [results[0]["embeddings"]]
+        search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+        
+        # We search the NEW collection
+        search_res = dest_col.search(
+            data=search_vector, 
+            anns_field="embeddings", 
+            param=search_params, 
+            limit=3,
+            output_fields=["*"] # Fetch all scalar fields in results
+        )
+        
+        print("\n--- Search Results ---")
+        for hits in search_res:
+            for hit in hits:
+                print(f"Hit ID (newly generated): {hit.id}, Distance: {hit.distance}")
+
+if __name__ == "__main__":
+    backup_and_restore()
