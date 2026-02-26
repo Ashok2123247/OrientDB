@@ -1,5 +1,5 @@
 import time
-from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
+from pymilvus import connections, Collection, utility, db
 
 # --- Configuration ---
 SOURCE_CONFIG = {
@@ -10,7 +10,7 @@ SOURCE_CONFIG = {
 
 TARGET_CONFIG = {
     "uri": "localhost:19530",
-    "db_name": "backup_db", # Ensure this DB exists or use "default"
+    "db_name": "default", # Changed to default for ease; change if needed
     "collection_name": "restored_collection"
 }
 
@@ -23,20 +23,22 @@ def duplicate_collection():
         return
 
     src_col = Collection(SOURCE_CONFIG["collection_name"], using="source")
-    src_col.load() # Load to ensure we can read data
-
-    # 2. Extract Schema and Index Info
-    schema = src_col.schema
-    index_details = [idx.to_dict() for idx in src_col.indexes]
     
-    # 3. Connect to Target
+    # --- FIX: Identify the vector field and all field names ---
+    schema = src_col.schema
+    all_field_names = [field.name for field in schema.fields]
+    vector_field_name = next(field.name for field in schema.fields if field.dtype.name in ['FLOAT_VECTOR', 'BINARY_VECTOR'])
+    
+    print(f"Detected vector field: {vector_field_name}")
+
+    # 2. Connect to Target
     connections.connect(alias="target", uri=TARGET_CONFIG["uri"], db_name=TARGET_CONFIG["db_name"])
     
-    # Remove target if it already exists (Optional)
+    # 3. Drop target if it exists to avoid schema mismatch errors
     if utility.has_collection(TARGET_CONFIG["collection_name"], using="target"):
         utility.drop_collection(TARGET_CONFIG["collection_name"], using="target")
 
-    # 4. Create New Collection with same schema
+    # 4. Create New Collection
     dest_col = Collection(
         name=TARGET_CONFIG["collection_name"],
         schema=schema,
@@ -44,28 +46,37 @@ def duplicate_collection():
     )
     print(f"Created collection: {TARGET_CONFIG['collection_name']}")
 
-    # 5. Migrate Data (Batching is recommended for large datasets)
-    # Using query with empty expression to get all data
-    results = src_col.query(expr="", output_fields=["*"])
+    # 5. Migrate Data with explicit field selection
+    # We explicitly request all fields, including the vector field
+    results = src_col.query(expr="", output_fields=all_field_names)
+    
     if results:
+        # Check if any data is missing for the vector field
+        if vector_field_name not in results[0]:
+            print(f"Error: Vector data for '{vector_field_name}' was not retrieved.")
+            return
+
         dest_col.insert(results)
         dest_col.flush()
         print(f"Successfully migrated {len(results)} entities.")
 
     # 6. Recreate Indexes
-    for idx in index_details:
-        field_name = idx['field_name']
-        index_params = idx['index_param']
-        dest_col.create_index(field_name=field_name, index_params=index_params)
-        print(f"Index recreated on field: {field_name}")
+    # Note: We must recreate the index BEFORE loading for search performance
+    for idx in src_col.indexes:
+        idx_dict = idx.to_dict()
+        dest_col.create_index(
+            field_name=idx_dict['field_name'], 
+            index_params=idx_dict['index_param']
+        )
+        print(f"Index recreated on: {idx_dict['field_name']}")
 
     # 7. Load and Verify
     dest_col.load()
-    print("Collection loaded. Ready for search.")
+    print("Collection loaded successfully.")
     
-    # Simple Search Test (Assumes your vector field is named 'embeddings')
-    # search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
-    # results = dest_col.search(data=[[0.1] * dim], anns_field="embeddings", param=search_params, limit=1)
-    
+    # Verification Query
+    res = dest_col.query(expr="", limit=1, output_fields=[vector_field_name])
+    print("Verification peek:", res)
+
 if __name__ == "__main__":
     duplicate_collection()
