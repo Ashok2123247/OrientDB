@@ -1,0 +1,47 @@
+#!/bin/bash
+
+BACKUP_NAME="daily_backup_$(date +%s)"
+COLLECTIONS="vector_records,user_embeddings"
+
+echo "Step 1: Starting backup [$BACKUP_NAME]..."
+./milvus-backup create -n $BACKUP_NAME -c $COLLECTIONS
+
+if [ $? -eq 0 ]; then
+    echo "Backup initiated successfully."
+    
+    echo "Step 2: Restoring to new collections for verification..."
+    ./milvus-backup restore -n $BACKUP_NAME -s _v2 --restore_index true
+else
+    echo "Backup failed. Check your Milvus connection or YAML config."
+    exit 1
+fi
+
+
+#!/bin/bash
+
+# Configuration
+COLLECTION_NAME="my_vector_collection"
+BACKUP_NAME="backup_$(date +%Y%m%d_%H%M%S)"
+RESTORE_SUFFIX="_restored"
+RESTORED_COLLECTION="${COLLECTION_NAME}${RESTORE_SUFFIX}"
+
+echo "--- Step 1: Flushing Data ---"
+# Forces Milvus to write sealed segments to disk/MinIO
+milvus_cli -e "flush -c $COLLECTION_NAME"
+
+echo "--- Step 2: Creating Backup ---"
+./milvus-backup create -n "$BACKUP_NAME" -c "$COLLECTION_NAME"
+
+echo "--- Step 3: Restoring with Index ---"
+# We use --restore_index to ensure the index is rebuilt during the import
+./milvus-backup restore -n "$BACKUP_NAME" -s "$RESTORE_SUFFIX" --restore_index true
+
+echo "--- Step 4: Loading Collection into Memory ---"
+# Data must be loaded to memory before it can be queried
+milvus_cli -e "load -c $RESTORED_COLLECTION"
+
+echo "--- Step 5: Querying Restored Data ---"
+# Example: Querying by a scalar ID or field
+milvus_cli -e "query -c $RESTORED_COLLECTION -f 'id, vector' -p 'id > 0' -l 5"
+
+echo "Workflow Complete."
