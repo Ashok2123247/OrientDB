@@ -1,82 +1,45 @@
-import time
-from pymilvus import connections, Collection, utility, db
+from pymilvus import connections, Collection, utility
 
-# --- Configuration ---
-SOURCE_CONFIG = {
-    "uri": "localhost:19530",
-    "db_name": "default",
-    "collection_name": "original_collection"
-}
+# 1. Connect to your target Milvus instance
+connections.connect("default", host="localhost", port="19530")
 
-TARGET_CONFIG = {
-    "uri": "localhost:19530",
-    "db_name": "default", # Changed to default for ease; change if needed
-    "collection_name": "restored_collection"
-}
-
-def duplicate_collection():
-    # 1. Connect to Source
-    connections.connect(alias="source", uri=SOURCE_CONFIG["uri"], db_name=SOURCE_CONFIG["db_name"])
-    
-    if not utility.has_collection(SOURCE_CONFIG["collection_name"], using="source"):
-        print(f"Source collection {SOURCE_CONFIG['collection_name']} not found!")
+def load_and_verify(collection_name):
+    # Check if collection exists
+    if not utility.has_collection(collection_name):
+        print(f"Collection '{collection_name}' not found.")
         return
 
-    src_col = Collection(SOURCE_CONFIG["collection_name"], using="source")
-    
-    # --- FIX: Identify the vector field and all field names ---
-    schema = src_col.schema
-    all_field_names = [field.name for field in schema.fields]
-    vector_field_name = next(field.name for field in schema.fields if field.dtype.name in ['FLOAT_VECTOR', 'BINARY_VECTOR'])
-    
-    print(f"Detected vector field: {vector_field_name}")
+    # 2. Initialize the collection object
+    col = Collection(collection_name)
 
-    # 2. Connect to Target
-    connections.connect(alias="target", uri=TARGET_CONFIG["uri"], db_name=TARGET_CONFIG["db_name"])
+    # 3. Load the collection into memory (Crucial step!)
+    print(f"Loading collection: {collection_name}...")
+    col.load() 
     
-    # 3. Drop target if it exists to avoid schema mismatch errors
-    if utility.has_collection(TARGET_CONFIG["collection_name"], using="target"):
-        utility.drop_collection(TARGET_CONFIG["collection_name"], using="target")
+    # Wait until loading is complete
+    utility.wait_for_loading_complete(collection_name)
+    print(f"Collection {collection_name} is now in memory.")
 
-    # 4. Create New Collection
-    dest_col = Collection(
-        name=TARGET_CONFIG["collection_name"],
-        schema=schema,
-        using="target"
+    # 4. Filter and Search
+    # Replace 'vector_field' and 'id_field' with your actual schema names
+    search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
+    
+    # Example: Searching for a dummy vector with a scalar filter
+    # Adjust the filter (expr) to match your data (e.g., "id > 0" or "category == 'A'")
+    results = col.search(
+        data=[[0.1] * 128],  # Example dummy vector (ensure dim matches schema)
+        anns_field="embeddings", 
+        param=search_params,
+        limit=5,
+        expr="id > 0",  # This is your boolean filter
+        output_fields=["id", "metadata"] # Fields to return
     )
-    print(f"Created collection: {TARGET_CONFIG['collection_name']}")
 
-    # 5. Migrate Data with explicit field selection
-    # We explicitly request all fields, including the vector field
-    results = src_col.query(expr="", output_fields=all_field_names)
-    
-    if results:
-        # Check if any data is missing for the vector field
-        if vector_field_name not in results[0]:
-            print(f"Error: Vector data for '{vector_field_name}' was not retrieved.")
-            return
+    for hits in results:
+        for hit in hits:
+            print(f"Hit: {hit.id}, Distance: {hit.distance}, Fields: {hit.entity.to_dict()}")
 
-        dest_col.insert(results)
-        dest_col.flush()
-        print(f"Successfully migrated {len(results)} entities.")
-
-    # 6. Recreate Indexes
-    # Note: We must recreate the index BEFORE loading for search performance
-    for idx in src_col.indexes:
-        idx_dict = idx.to_dict()
-        dest_col.create_index(
-            field_name=idx_dict['field_name'], 
-            index_params=idx_dict['index_param']
-        )
-        print(f"Index recreated on: {idx_dict['field_name']}")
-
-    # 7. Load and Verify
-    dest_col.load()
-    print("Collection loaded successfully.")
-    
-    # Verification Query
-    res = dest_col.query(expr="", limit=1, output_fields=[vector_field_name])
-    print("Verification peek:", res)
-
-if __name__ == "__main__":
-    duplicate_collection()
+# List all collections and process them
+collections = utility.list_collections()
+for name in collections:
+    load_and_verify(name)
