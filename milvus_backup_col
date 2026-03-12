@@ -1,0 +1,123 @@
+from pymilvus import *
+import datetime
+
+SOURCE_CONFIG = {"uri": "http://localhost:19530", "db_name": "test", "collection_name": "collectiontest"}
+TARGET_CONFIG = {"uri": "http://localhost:19530", "db_name": "demo", "collection_name": "collectiontest"}
+
+BATCH_SIZE = 1000
+
+
+def backup_and_restore():
+
+    formatted_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ---------- CONNECT SOURCE ----------
+    connections.connect(
+        alias="source",
+        uri=SOURCE_CONFIG["uri"],
+        db_name=SOURCE_CONFIG["db_name"]
+    )
+
+    if not utility.has_collection(SOURCE_CONFIG["collection_name"], using="source"):
+        print("Source collection not found")
+        return
+
+    src_col = Collection(SOURCE_CONFIG["collection_name"], using="source")
+    src_col.load()
+
+    schema = src_col.schema
+
+    # ---------- MODIFY AUTO_ID ----------
+    for field in schema.fields:
+        if field.is_primary:
+            field.auto_id = False
+
+    # ---------- CONNECT TARGET ----------
+    connections.connect(
+        alias="target",
+        uri=TARGET_CONFIG["uri"],
+        db_name=TARGET_CONFIG["db_name"]
+    )
+
+    if utility.has_collection(TARGET_CONFIG["collection_name"], using="target"):
+        utility.drop_collection(TARGET_CONFIG["collection_name"], using="target")
+
+    # ---------- CREATE TARGET COLLECTION ----------
+    target_schema = CollectionSchema(
+        fields=schema.fields,
+        description=schema.description
+    )
+
+    tgt_col = Collection(
+        name=TARGET_CONFIG["collection_name"],
+        schema=target_schema,
+        using="target"
+    )
+
+    # ---------- CREATE INDEXES DYNAMICALLY ----------
+    for idx in src_col.indexes:
+        index_info = idx.to_dict()
+
+        field_name = index_info["field_name"]
+        index_params = index_info["index_param"]
+
+        print("Creating index on:", field_name)
+
+        tgt_col.create_index(
+            field_name=field_name,
+            index_params=index_params
+        )
+
+    # ---------- COPY DATA ----------
+    offset = 0
+
+    while True:
+
+        results = src_col.query(
+            expr="",
+            offset=offset,
+            limit=BATCH_SIZE,
+            output_fields=["*"]
+        )
+
+        if not results:
+            break
+
+        insert_data = {}
+
+        for field in schema.fields:
+            insert_data[field.name] = [r[field.name] for r in results]
+
+        tgt_col.insert(insert_data)
+
+        offset += BATCH_SIZE
+        print("Copied rows:", offset)
+
+    # ---------- FLUSH ----------
+    tgt_col.flush()
+
+    # ---------- LOAD TARGET ----------
+    tgt_col.load()
+
+    # ---------- VALIDATION SEARCH ----------
+    vector_field = None
+
+    for field in schema.fields:
+        if field.dtype.name in ["FLOAT_VECTOR", "BINARY_VECTOR"]:
+            vector_field = field.name
+
+    sample = src_col.query(expr="", limit=1, output_fields=[vector_field])
+
+    search_param = {"metric_type": "L2", "params": {"nprobe": 10}}
+
+    res = tgt_col.search(
+        data=[sample[0][vector_field]],
+        anns_field=vector_field,
+        param=search_param,
+        limit=3
+    )
+
+    print("Restore validation search result:", res)
+
+
+backup_and_restore()
