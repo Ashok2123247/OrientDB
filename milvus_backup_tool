@@ -1,0 +1,46 @@
+./milvus-backup restore \
+  --config backup.yaml \
+  --name my_backup_job_v1 \
+  --db my_target_database \
+  --collection_name_dict '{"original_collection": "restored_collection"}' \
+  --run_index true
+  
+Breakdown of flags:
+--name: The unique ID of the backup you previously created.
+--db: The name of the Milvus Database where the data should land.
+--collection_name_dict: A JSON map. This allows you to restore collection_A as collection_B.
+--run_index: Set to true to trigger the index building automatically upon restoration.
+
+## load
+  from pymilvus import MilvusClient
+
+client = MilvusClient(
+    uri="http://localhost:19530",
+    db_name="my_target_database" # Connect to the specific DB
+)
+
+# Load the restored collection
+# New Feature: skip_load_dynamic_field=False ensures all metadata is available
+client.load_collection(
+    collection_name="restored_collection",
+    replica_number=1
+)
+
+
+## search
+search_params = {
+    "metric_type": "L2", 
+    "params": {"nprobe": 10}
+}
+
+results = client.search(
+    collection_name="restored_collection",
+    data=[[0.1, 0.2, 0.5, 0.3]], # Your query vector
+    limit=3,
+    search_params=search_params,
+    output_fields=["*"],          # Returns all scalar fields
+    consistency_level="Strong"    # Ensures data integrity post-restore
+)
+
+for result in results:
+    print(result)
