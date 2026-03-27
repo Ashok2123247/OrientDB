@@ -1,0 +1,92 @@
+SQL Server 2025 (version 17.x) introduces a suite of features designed to make the engine more autonomous, AI-ready, and resilient under high concurrency. Below is the documentation for the top 5 features that provide the most significant database performance improvements.
+
+-----
+
+## 1\. Optimized Locking (TID-based Locking)
+
+**Use & Importance:** Reduces lock memory consumption and transaction blocking. In previous versions, high-concurrency workloads often suffered from "lock escalation" where many row locks became a single table lock, killing performance. Optimized locking uses Transaction ID (TID) locking to allow many writers to modify the same page without stepping on each other's toes.
+
+  * **Types:** \* **TID Locking:** Locks are held on the transaction ID rather than the physical row/page resource.
+      * **Lock After Qualification (LAQ):** Reduces the duration of locks by only locking rows that actually meet the query criteria.
+  * **Prerequisites:** Database must be at **Compatibility Level 160** or higher. Accelerated Database Recovery (ADR) must be enabled.
+  * **Validation:**
+    ```sql
+    ALTER DATABASE [YourDB] SET OPTIMIZED_LOCKING = ON;
+    -- Monitor reduced LCK_M_IX waits in sys.dm_os_wait_stats
+    ```
+  * **Limitations:** Not supported for tables with Clustered Columnstore Indexes or those using Row-Level Security (RLS) in certain configurations.
+  * **Best Practices:** DBAs should enable this for OLTP databases with high "Update/Delete" volume to prevent blocker trees.
+
+-----
+
+## 2\. TempDB Resource Governance
+
+**Use & Importance:** Prevents "runaway queries" from filling up TempDB and crashing the entire SQL instance. Historically, one bad query could consume all TempDB space, affecting every other database on the server. This feature "sandboxes" workloads.
+
+  * **Types:** \* **Fixed Limit:** Sets a hard MB limit for a workload group.
+      * **Percentage Limit:** Sets a limit based on the total size of TempDB data files.
+  * **Prerequisites:** **Resource Governor** must be enabled at the instance level.
+  * **Validation:**
+    ```sql
+    CREATE WORKLOAD GROUP ReportingGroup 
+    WITH (GROUP_MAX_TEMPDB_DATA_PERCENT = 25);
+    ALTER RESOURCE GOVERNOR RECONFIGURE;
+    ```
+  * **Limitations:** Limits apply only to **Data** files, not the Transaction Log. It does not prevent system-wide TempDB pressure if the "Default" group is not restricted.
+  * **Best Practices:** DBAs should isolate "Ad-hoc" or "Reporting" users into a specific workload group with a 20-30% cap to protect production OLTP.
+
+-----
+
+## 3\. Optional Parameter Plan Optimization (OPPO)
+
+**Use & Importance:** Solves the "Parameter Sniffing" problem for queries using `OR` logic or `ISNULL` filters. It allows the engine to generate multiple execution plans for a single query and pick the best one at runtime based on whether the parameter provided is NULL or has a specific value.
+
+  * **Types:** Part of the **Intelligent Query Processing (IQP)** family; uses the Multiplan infrastructure.
+  * **Prerequisites:** Database Compatibility Level **170**. **Query Store** must be enabled.
+  * **Validation:**
+    ```sql
+    -- Query Store will show multiple plan_ids for the same query_id
+    SELECT * FROM Sales.Orders WHERE CustomerID = @ID OR @ID IS NULL;
+    ```
+  * **Limitations:** Only triggers for specific patterns (like the "Catch-all" query pattern). It may increase Query Store storage usage due to multiple stored plans.
+  * **Best Practices:** Developers should use this to replace complex dynamic SQL or `OPTION(RECOMPILE)` hints, which are CPU-intensive.
+
+-----
+
+## 4\. Accelerated Database Recovery (ADR) for TempDB
+
+**Use & Importance:** Brings "instantaneous rollback" to TempDB. If a massive transaction (like a 10-million row insert into a `#temp` table) is canceled, it normally takes just as long to roll back as it did to run. With ADR, the rollback is nearly instant, and the TempDB log is truncated more aggressively.
+
+  * **Types:** Uses a **Persistent Version Store (PVS)** inside TempDB itself to track changes.
+  * **Prerequisites:** SQL Server 2025 Enterprise or Standard Edition.
+  * **Validation:**
+    ```sql
+    ALTER DATABASE [tempdb] SET ACCELERATED_DATABASE_RECOVERY = ON;
+    -- Check sys.dm_tran_active_snapshot_database_transactions for PVS usage.
+    ```
+  * **Limitations:** Increases TempDB data file size slightly to accommodate the PVS.
+  * **Best Practices:** Essential for environments running heavy ETL or large "Sort/Hash" operations that frequently spill to disk.
+
+-----
+
+## 5\. Native Vector Search (DiskANN)
+
+**Use & Importance:** While typically an AI feature, the performance impact here is massive for modern applications. It allows SQL Server to perform "Similarity Searches" across millions of rows using the **DiskANN algorithm**, which is significantly faster and more memory-efficient than traditional `LIKE` or Full-Text search for unstructured data.
+
+  * **Types:** \* **VECTOR** data type (stores embeddings).
+      * **Vector Index:** Uses Approximate Nearest Neighbor (ANN) logic.
+  * **Prerequisites:** Requires enabling `PREVIEW_FEATURES` database-scoped configuration (in early 2025 builds).
+  * **Validation:**
+    ```sql
+    CREATE VECTOR INDEX v_idx ON ProductEmbeddings(Embedding) 
+    WITH (DISTANCE_METRIC = 'COSINE');
+    ```
+  * **Limitations:** Only supports specific distance metrics (Cosine, Euclidean). High CPU usage during index build.
+  * **Best Practices:** Keep embeddings normalized before insertion to ensure the highest accuracy and fastest search speeds.
+
+-----
+
+Would you like me to generate a T-SQL script to audit your current database compatibility levels and identify which of these features can be enabled immediately?
+
+[SQL Server 2025 Performance and AI Features](https://www.google.com/search?q=https://www.youtube.com/watch%3Fv%3DFj2F7M5M1p8)
+This video provides a practical walkthrough of the core SQL Server 2025 engine updates, specifically focusing on the performance benefits of Optimized Locking and Vector Search.
