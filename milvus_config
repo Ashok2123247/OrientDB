@@ -30,3 +30,28 @@ backup:
     backupCollection: 4
     copydata: 16
     restoreCollection: 2
+
+
+
+
+
+
+## cross 
+minio:
+  # Source Milvus storage (where your data lives)
+  storageType: "minio"
+  address: source-minio:9000
+  bucketName: "milvus-bucket"
+  rootPath: "file"                    # ← Must match your Milvus config
+  
+  # Backup storage location (shared/local path for cross-database)
+  backupStorageType: "minio"
+  backupAddress: shared-minio:9000    # Or your local MinIO
+  backupBucketName: "backup-bucket"
+  backupRootPath: "backup"            # Where backups will be stored
+
+
+
+
+# Check your Milvus configmap or values.yaml
+kubectl get configmap my-milvus -n milvus-namespace -o yaml | grep -A5 -B5 rootPath
