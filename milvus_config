@@ -1,0 +1,32 @@
+log:
+  level: info
+  console: true
+  file:
+    rootPath: "logs/backup.log"        # ← Log path (different from minio rootPath)
+
+milvus:
+  address: my-release-milvus.default.svc.cluster.local
+  port: 19530
+  authorizationEnabled: false
+
+minio:
+  storageType: "minio"
+  address: my-release-minio.default.svc.cluster.local
+  port: 9000
+  accessKeyID: minioadmin
+  secretAccessKey: minioadmin
+  useSSL: false
+  bucketName: "milvus-bucket"          # Milvus data bucket
+  rootPath: "file"                      # ← THIS FIXES YOUR ERROR!
+  
+  # For cross-database - where backups go
+  backupStorageType: "minio"
+  backupAddress: shared-minio:9000
+  backupBucketName: "backup-bucket"
+  backupRootPath: "backup"
+
+backup:
+  parallelism:
+    backupCollection: 4
+    copydata: 16
+    restoreCollection: 2
