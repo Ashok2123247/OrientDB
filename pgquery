@@ -1,0 +1,28 @@
+WITH monthly_data AS (
+    SELECT
+        server,
+        database,
+        DATE_TRUNC('month', ctime) AS month,
+        MAX(dsize) AS month_end_size
+    FROM your_table
+    WHERE
+        server = 'your_server'
+        AND database = 'your_db'
+        AND ctime >= CURRENT_DATE - INTERVAL '6 months'
+    GROUP BY server, database, DATE_TRUNC('month', ctime)
+),
+monthly_diff AS (
+    SELECT
+        month,
+        month_end_size,
+        month_end_size - LAG(month_end_size) OVER (ORDER BY month) AS diff
+    FROM monthly_data
+)
+SELECT
+    MAX(CASE WHEN month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month') THEN diff END) AS last_month,
+    MAX(CASE WHEN month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '2 month') THEN diff END) AS last2_months,
+    MAX(CASE WHEN month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '3 month') THEN diff END) AS last3_months,
+    MAX(CASE WHEN month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '4 month') THEN diff END) AS last4_months,
+    MAX(CASE WHEN month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '5 month') THEN diff END) AS last5_months,
+    MAX(CASE WHEN month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '6 month') THEN diff END) AS last6_months
+FROM monthly_diff;
