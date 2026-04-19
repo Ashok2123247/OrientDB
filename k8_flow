@@ -1,0 +1,143 @@
+
+
+Access Layer
+	Proxy:  Single entry point for all clients connections. 
+			Fwd DDL/DML ops to message queue. Load balances queries and send results to clients
+
+Control Pane (Coordinators)
+
+	Root Coord: Manages global timestamps for data consistency and handles DDL ops like create and drops collection
+	Data Coord: Its manages segments( basic unit of data storage), allocate channels for data nodes to subscribe to triggers flush ops
+	Query Coord: manages the distributed query execution. It balances the query load across
+	Index Coord: Manages Index-building tasks. It assigns indexing jobs to index nodes and tracks the status of index files
+	
+Worker Nodes
+	Data Node: It consumes data from the message queue's WAL (write-Ahead log),process the data and flushes it to the object storage as persistence segments
+	Index Node: Builds indexes on data segments that have been persisted.  Process can be resource intensive and may utilize GPU
+	Query Node: Executor for all search requests. it loads data and indexes from obj storage into its own memory/cache and perform the actual vector similarity search
+	
+	
+Core Dependencies:
+	Message Queue: (Pulsar/Kafka) : Acts as the central nervous system, decoupling the control plane from the workers. 
+					It provides a durable, replayable WAL and enables a pub/sub model for data flow
+					
+	Object Storage (MinIO/S3): The persistent data lake. It stores all data files, delta logs, and index files, 
+					enabling compute and storage to scale independently
+					
+	Metadata Store (etcd): The brain for service discovery and configuration. 
+							It stores the cluster's health status, component addresses, and schema metadata
+							
+							
+	Data Flow Scenarios
+	
+Data Insert Flow: SDK → Proxy → Message Queue (WAL) → Data Node → Object Storage
+
+The Proxy receives data, interacts with Data Coord to get a segment ID, and sends the data to the message queue.
+Data Nodes subscribe to the queue, process the streaming data, and periodically flush it to object storage.
+Later, Index Nodes will build indexes on these files to optimize future searches.
+
+
+Vector Search Flow: SDK → Proxy → Query Node → Response
+
+The Proxy receives the search request and forwards it to Query Coord.
+Query Coord determines which Query Nodes hold the relevant data.
+The target Query Nodes execute the similarity search, and the Proxy gathers and returns the top results.
+
+
+Component,				Layer,						Primary Role
+Proxy,					Access,						"Handles load balancing, request validation, and result aggregation."
+Root Coord,				Control,					"The ""brain."" Manages DDL (creating collections) and TSO (timestamping)."
+Query Coord,			Control,					"Manages the Query Nodes, ensures data is loaded into memory, and handles failovers."
+Data Coord,				Control,					"Orchestrates data ingestion, segment allocation, and flushing logic."
+Query Node,				Worker,						Executes searches and queries. Highly RAM-intensive.
+Data Node,				Worker,						Handles data persistence and transforms streaming logs into static files.
+Index Node,				Worker,						Builds vector indexes. Highly CPU-intensive.
+
+
+Helm: Package Manager for K8 it allows template yamls insted of hardcoding values (like CPU limits, images version) by using variables
+Helm bundles all the yaml files inoto a single package called a Chart. 
+
+my-enterprise-org/
+├── helm-charts/              # Centralized repo for shared internal charts
+│   ├── common-library/       # Standardized templates for all apps
+│   └── milvus-wrapper/       # Custom logic/defaults for Milvus
+├── kubernetes-deploy/        # The "Source of Truth" for environments
+│   ├── root-deploy/
+│   │   ├── values.yaml       # Global defaults (e.g., registry URL)
+│   │   ├── Chart.yaml        # Umbrella chart defining dependencies
+│   │   └── environments/
+│   │       ├── dev/
+│   │       │   ├── values-dev.yaml
+│   │       │   └── secrets.enc.yaml   # Encrypted secrets (e.g., via SOPS)
+│   │       ├── staging/
+│   │       │   └── values-staging.yaml
+│   │       └── prod/
+│   │           └── values-prod.yaml
+│   └── .gitlab-ci.yml        # CI/CD pipeline definition
+
+
+2. Umbrella Chart configuration
+
+apiVersion: v2
+name: enterprise-milvus-stack
+description: Managed Milvus stack for Enterprise Data Team
+type: application
+version: 1.0.0
+
+dependencies:
+  - name: milvus
+    version: "4.2.0" # Specific version to ensure stability
+    repository: "https://zilliztech.github.io/milvus-helm/"
+	
+
+sub-dir: environments/prod/values-prod.yaml
+milvus:
+  cluster:
+    enabled: true  # Enables distributed mode for production
+  
+  queryNode:
+    replicas: 5    # Higher scaling for prod traffic
+    resources:
+      limits:
+        cpu: "4"
+        memory: "16Gi"
+
+  # Enterprise storage configuration
+  externalS3:
+    enabled: true
+    host: "s3.ap-south-1.amazonaws.com"
+    bucketName: "prod-milvus-data"
+	
+
+3. GitLab CI/CD Automation Flow
+sample: .gitlab-ci.yml
+stages:
+  - lint
+  - deploy-dev
+  - deploy-prod
+
+lint_helm:
+  stage: lint
+  script:
+    - helm dependency update ./root-deploy
+    - helm lint ./root-deploy -f ./root-deploy/environments/dev/values-dev.yaml
+
+deploy_prod:
+  stage: deploy-prod
+  script:
+    - helm upgrade --install milvus-prod ./root-deploy \
+      --namespace milvus-prod \
+      -f ./root-deploy/values.yaml \
+      -f ./root-deploy/environments/prod/values-prod.yaml
+  when: manual # Safety gate for production
+  only:
+    - main
+	
+
+
+4. Why this works for Enterprise
+Dry Principle (Don't Repeat Yourself): The core logic stays in the Helm chart; only parameters change in the environments/ subdirectories.
+
+Audit Trail: Every change to a production variable is tracked via a GitLab Merge Request.
+
+Separation of Concerns: DBAs can manage the milvus configuration in the YAMLs, while SREs manage the CI/CD pipeline infrastructure.
