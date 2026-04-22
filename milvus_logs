@@ -1,0 +1,62 @@
+Since Milvus stores all its metadata (collection schemas, index status, and node health) in **etcd**, any delay there will cause the Milvus Proxy to "forget" where the data is, leading to the disconnections you're seeing.
+
+### 1. How to Check the Logs
+Depending on how you deployed Milvus on Kubernetes, use the following commands:
+
+**If using Milvus Operator or Helm (Standard):**
+First, find your etcd pods:
+```bash
+kubectl get pods -l app.kubernetes.io/name=etcd
+```
+Then, stream the logs (replace `<pod-name>`):
+```bash
+kubectl logs -f <pod-name>
+```
+
+**If etcd is a Sidecar or part of a Standalone pod:**
+```bash
+kubectl logs <milvus-pod-name> -c etcd
+```
+
+---
+
+### 2. What to Verify (The "Red Flags")
+Look for these specific error strings in the logs. As a DBA, these will tell you if the "disk" or "network" is the bottleneck:
+
+#### **A. Disk Latency: "slow fdatasync"**
+* **Log Message:** `stderr | etcdserver: slow fdatasync (duration=1.2s, threshold=1s)`
+* **What it means:** etcd took over 1 second to write a "heartbeat" to the disk. 
+* **The Impact:** If this happens, etcd might lose its leader. When the leader changes, Milvus connections often drop instantly because the metadata is temporarily "locked."
+* **Solution:** Ensure you are using **SSD/Premium SSD** (like Azure P15+ or AWS gp3) for the etcd PVC. Standard HDDs are too slow for etcd's IOPS requirements.
+
+#### **B. Database Full: "database space exceeded"**
+* **Log Message:** `mvcc: database space exceeded`
+* **What it means:** etcd has a default 2GB or 8GB quota. If you have many collections or frequent updates, it might hit this limit.
+* **The Impact:** etcd goes into **Maintenance Mode**, becoming read-only. Milvus won't be able to create new segments or update status, causing query failures.
+* **Solution:** You must run a `defrag` and clear the alarm:
+    ```bash
+    # Clear the alarm after cleaning up data
+    etcdctl alarm disarm
+    ```
+
+#### **C. Heartbeat Failures: "failed to send out heartbeat on time"**
+* **Log Message:** `etcdserver: failed to send out heartbeat on time (duration=250ms, threshold=100ms)`
+* **What it means:** The CPU is likely throttled, or the network between etcd pods is congested.
+* **The Impact:** This leads to "Leader Election Flapping." Milvus sees this as the database being "down" for a few milliseconds, which is enough to kill a gRPC connection.
+
+#### **D. Request Overload: "apply request took too long"**
+* **Log Message:** `etcdserver: apply request took too long (duration=150ms)`
+* **What it means:** There are too many concurrent metadata requests hitting etcd.
+* **Solution:** In Milvus 2.6.x, check if you have too many "small segments." Use the Milvus `compact` command to merge segments so etcd has fewer keys to track.
+
+---
+
+### Pro-Tip for your Kubernetes Setup
+Since you mentioned using **Milvus 2.6.5**, check your `etcd` resource limits in your YAML. For a production-grade cluster, etcd should have at least:
+* **CPU:** 200m - 500m
+* **Memory:** 512Mi - 2Gi (depending on data size)
+* **Disk:** A dedicated SSD-backed StorageClass.
+
+
+
+Would you like the specific `etcdctl` commands to check the health and endpoint status of your cluster members?
