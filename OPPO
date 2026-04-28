@@ -1,0 +1,160 @@
+Below are **two precise scenarios** to test **Optional Parameter Plan Optimization (OPPO)** in Microsoft SQL Server (2022/2025 behavior), using AdventureWorks.
+
+---
+
+# **1) Best Option – Optional Parameter Plan Optimization (OPPO) with Dynamic Search**
+
+### **Concept**
+
+OPPO handles queries where parameters are optional (e.g., `@param IS NULL OR column = @param`) by generating **multiple plan variants** internally.
+
+---
+
+### **Step 1: Prepare Test Table**
+
+```sql
+SELECT * INTO Sales.SalesOrderHeader_OPPO
+FROM Sales.SalesOrderHeader;
+
+CREATE INDEX IX_OPPO_CustomerID 
+ON Sales.SalesOrderHeader_OPPO(CustomerID);
+```
+
+---
+
+### **Step 2: Enable OPPO**
+
+```sql
+ALTER DATABASE SCOPED CONFIGURATION 
+SET OPTIONAL_PARAMETER_OPTIMIZATION = ON;
+```
+
+---
+
+### **Step 3: Optional Parameter Query**
+
+```sql
+DECLARE @CustomerID INT = NULL;
+
+SELECT SalesOrderID, CustomerID, OrderDate
+FROM Sales.SalesOrderHeader_OPPO
+WHERE (@CustomerID IS NULL OR CustomerID = @CustomerID);
+```
+
+---
+
+### **Test Different Cases**
+
+```sql
+-- Case 1: NULL (returns all rows)
+SET @CustomerID = NULL;
+
+-- Case 2: Selective value
+SET @CustomerID = 11000;
+```
+
+---
+
+### **Validation**
+
+```sql
+SELECT qs.plan_handle, qs.execution_count, qs.query_hash
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle)
+WHERE text LIKE '%SalesOrderHeader_OPPO%';
+```
+
+---
+
+### **Result**
+
+✔ SQL Server generates **multiple plan variants**
+✔ Uses **scan plan when NULL (full data)**
+✔ Uses **seek plan when parameter is selective**
+✔ Eliminates need for manual dynamic SQL
+
+---
+
+# **2) Second Option – Traditional Handling (Manual Optimization without OPPO)**
+
+### **Concept**
+
+Before OPPO, optional parameters caused **poor plans** (scan-heavy). Workarounds were manual.
+
+---
+
+### **Option A: Dynamic SQL**
+
+```sql
+DECLARE @CustomerID INT = 11000;
+DECLARE @sql NVARCHAR(MAX);
+
+SET @sql = '
+SELECT SalesOrderID, CustomerID, OrderDate
+FROM Sales.SalesOrderHeader_OPPO
+WHERE 1=1 ';
+
+IF @CustomerID IS NOT NULL
+    SET @sql += ' AND CustomerID = @CustomerID';
+
+EXEC sp_executesql @sql, 
+    N'@CustomerID INT', 
+    @CustomerID;
+```
+
+✔ Generates optimal plan per case
+❌ More complex code
+
+---
+
+### **Option B: IF/ELSE Branching**
+
+```sql
+DECLARE @CustomerID INT = 11000;
+
+IF @CustomerID IS NULL
+BEGIN
+    SELECT SalesOrderID, CustomerID, OrderDate
+    FROM Sales.SalesOrderHeader_OPPO;
+END
+ELSE
+BEGIN
+    SELECT SalesOrderID, CustomerID, OrderDate
+    FROM Sales.SalesOrderHeader_OPPO
+    WHERE CustomerID = @CustomerID;
+END
+```
+
+✔ Clear plan separation
+❌ Code duplication
+
+---
+
+# **Key Differences**
+
+| Feature         | OPPO                     | Manual Methods   |
+| --------------- | ------------------------ | ---------------- |
+| Plan Handling   | Multiple automatic plans | Separate queries |
+| Code Complexity | Simple                   | Higher           |
+| Performance     | Adaptive                 | Good but manual  |
+| Maintenance     | Low                      | High             |
+
+---
+
+# **Practical Testing Tip**
+
+Use this to observe behavior clearly:
+
+```sql
+SET STATISTICS IO, TIME ON;
+```
+
+Also check execution plans:
+
+```sql
+SET SHOWPLAN_XML ON;
+```
+
+---
+
+If required, I can provide a **combined demo (PSP + OPPO + Query Store + execution plan comparison)** tailored for deep DBA-level validation.
