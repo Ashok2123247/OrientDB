@@ -1,0 +1,71 @@
+Below are concise, single-line bullet points for each feature, structured for presentation slides.
+
+---
+
+## 1. Optimized Locking
+
+* Reduces lock contention by using lightweight locking mechanisms.
+* Improves concurrency for high-transaction workloads.
+* Minimizes blocking between read and write operations.
+* Uses Transaction ID (TID) based locking internally.
+* Enhances performance for OLTP systems.
+* Works efficiently with row versioning features.
+
+---
+
+## 2. TempDB Resource Governance
+
+* Controls TempDB usage per workload or session.
+* Prevents a single query from consuming all TempDB resources.
+* Improves overall system stability under heavy load.
+* Enables fair allocation of TempDB space.
+* Reduces TempDB contention issues.
+* Useful for multi-tenant or mixed workloads.
+
+---
+
+## 3. Optional Parameter Plan Optimization
+
+* Improves execution plans for optional parameters in queries.
+* Avoids inefficient plans caused by parameter sniffing.
+* Generates multiple optimized plans based on input values.
+* Enhances query performance for dynamic filters.
+* Reduces need for manual query tuning.
+* Works automatically without code changes.
+
+---
+
+## 4. Accelerated Database Recovery (ADR) for TempDB
+
+* Speeds up recovery of TempDB after restart.
+* Reduces rollback time for long-running transactions.
+* Improves database availability.
+* Uses version store for faster undo operations.
+* Minimizes impact of transaction failures.
+* Enhances overall system resilience.
+
+---
+
+## 5. Memory Optimized Container and Filegroup Removal
+
+* Allows removal of unused memory-optimized filegroups.
+* Simplifies database maintenance and cleanup.
+* Frees up storage space efficiently.
+* Reduces complexity in database structure.
+* Supports better lifecycle management of in-memory objects.
+* Helps in managing deprecated or unused features.
+
+---
+
+## 6. Optimized sp_executesql
+
+* Improves execution performance of dynamic SQL queries.
+* Enhances plan reuse for repeated executions.
+* Reduces compilation overhead.
+* Provides better parameter handling.
+* Improves efficiency in high-frequency query execution.
+* Useful for dynamic and parameterized workloads.
+
+---
+
+If you want, I can convert this into a ready-to-use PPT structure with slide titles and speaker notes.
