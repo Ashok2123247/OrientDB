@@ -235,3 +235,75 @@ chmod 600 ~/.pgpass
 #### Option 2
 
 Store MongoDB URI and PostgreSQL passwords in encrypted vault or environment variables for production security.
+
+
+
+
+
+
+Install shc
+
+For Ubuntu:
+
+sudo apt update
+sudo apt install shc -y
+
+For CentOS/RHEL:
+
+sudo yum install epel-release -y
+sudo yum install shc -y
+Convert Script to Binary
+
+Example:
+
+shc -f mongo_to_postgres.sh
+
+This generates:
+
+mongo_to_postgres.sh.x
+
+Rename it:
+
+mv mongo_to_postgres.sh.x mongo_loader
+chmod +x mongo_loader
+
+Run:
+
+./mongo_loader
+Hide Source Script
+
+After validation:
+
+rm -f mongo_to_postgres.sh
+rm -f mongo_to_postgres.sh.x.c
+Important Notes
+Users cannot directly open and read the script.
+It is not 100% impossible to reverse engineer, but sufficiently protected for normal environments.
+Best for Linux production servers.
+Option 2 — Create Password Protected Package
+
+If you only want to prevent casual viewing, package the script into encrypted archive.
+
+Using ZIP Password
+zip --encrypt mongo_loader.zip mongo_to_postgres.sh
+
+Run after unzip:
+
+unzip mongo_loader.zip
+chmod +x mongo_to_postgres.sh
+./mongo_to_postgres.sh
+Alternative Using gpg
+
+Encrypt:
+
+gpg -c mongo_to_postgres.sh
+
+Decrypt:
+
+gpg mongo_to_postgres.sh.gpg
+Recommended Production Approach
+Method	Security	Recommended
+shc binary compile	High	Yes
+Password ZIP/GPG	Medium	Secondary
+.bat file	Low	No
+.exe conversion	Moderate	Only for Windows
