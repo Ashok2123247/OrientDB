@@ -1,0 +1,237 @@
+```bash
+#!/bin/bash
+
+##############################################################################
+# Script Name : mongo_to_postgres.sh
+# Purpose     : 
+#   1. Connect to multiple MongoDB URI's
+#   2. Run Mongo query script
+#   3. Generate CSV files
+#   4. Load CSV into PostgreSQL
+#   5. Handle logging and email alerts
+##############################################################################
+
+#########################
+# CONFIGURATION SECTION
+#########################
+
+# Mongo URI List
+MONGO_URIS=(
+"mongodb://user:password@server1:27017/admin"
+"mongodb://user:password@server2:27017/admin"
+"mongodb://user:password@server3:27017/admin"
+)
+
+# Mongo Database
+MONGO_DB="testdb"
+
+# Mongo Query Script
+MONGO_SCRIPT="/scripts/mongo_query.js"
+
+# Output Directory
+OUTPUT_DIR="/data/output"
+
+# Log Directory
+LOG_DIR="/data/logs"
+
+# PostgreSQL Details
+PG_HOST="localhost"
+PG_PORT="5432"
+PG_DB="postgresdb"
+PG_USER="postgres"
+PG_TABLE="mongo_data"
+
+# PostgreSQL Password
+export PGPASSWORD="postgres_password"
+
+# Email Details
+EMAIL_TO="dba_team@company.com"
+
+# Date Format
+RUN_DATE=$(date +"%Y%m%d_%H%M%S")
+
+# Log File
+LOG_FILE="${LOG_DIR}/mongo_pg_load_${RUN_DATE}.log"
+
+#########################
+# CREATE DIRECTORIES
+#########################
+
+mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${LOG_DIR}"
+
+#########################
+# REMOVE OLD FILES
+#########################
+
+echo "==================================================" >> "${LOG_FILE}"
+echo "Removing old CSV and LOG files" >> "${LOG_FILE}"
+
+rm -f ${OUTPUT_DIR}/*.csv
+rm -f ${LOG_DIR}/*.tmp
+
+#########################
+# SCRIPT START TIME
+#########################
+
+START_TIME=$(date +%s)
+
+echo "==================================================" >> "${LOG_FILE}"
+echo "Script Started : $(date)" >> "${LOG_FILE}"
+echo "==================================================" >> "${LOG_FILE}"
+
+#########################
+# MAIN LOOP
+#########################
+
+for URI in "${MONGO_URIS[@]}"
+do
+
+    SERVER_NAME=$(echo "${URI}" | awk -F'[@:/]' '{print $5}')
+
+    CSV_FILE="${OUTPUT_DIR}/${SERVER_NAME}_${RUN_DATE}.csv"
+
+    echo "" >> "${LOG_FILE}"
+    echo "Processing Mongo Server : ${SERVER_NAME}" >> "${LOG_FILE}"
+    echo "Start Time : $(date)" >> "${LOG_FILE}"
+
+    ##########################################################
+    # STEP 1 : CHECK MONGO CONNECTION
+    ##########################################################
+
+    mongosh "${URI}" --quiet --eval "db.adminCommand('ping')" >/dev/null 2>&1
+
+    if [ $? -ne 0 ]
+    then
+        echo "ERROR : MongoDB connection failed for ${SERVER_NAME}" >> "${LOG_FILE}"
+        echo "Skipping to next server..." >> "${LOG_FILE}"
+        continue
+    fi
+
+    echo "SUCCESS : MongoDB connection successful" >> "${LOG_FILE}"
+
+    ##########################################################
+    # STEP 2 : RUN MONGO QUERY AND EXPORT CSV
+    ##########################################################
+
+    mongosh "${URI}/${MONGO_DB}" --quiet "${MONGO_SCRIPT}" > "${CSV_FILE}" 2>>"${LOG_FILE}"
+
+    if [ $? -ne 0 ]
+    then
+        echo "ERROR : CSV generation failed for ${SERVER_NAME}" >> "${LOG_FILE}"
+        continue
+    fi
+
+    echo "SUCCESS : CSV generated : ${CSV_FILE}" >> "${LOG_FILE}"
+
+    ##########################################################
+    # STEP 3 : LOAD CSV TO POSTGRESQL
+    ##########################################################
+
+    psql \
+        -h "${PG_HOST}" \
+        -p "${PG_PORT}" \
+        -U "${PG_USER}" \
+        -d "${PG_DB}" \
+        -c "\COPY ${PG_TABLE} FROM '${CSV_FILE}' DELIMITER ',' CSV HEADER;" \
+        >> "${LOG_FILE}" 2>&1
+
+    ##########################################################
+    # STEP 4 : VERIFY LOAD STATUS
+    ##########################################################
+
+    if [ $? -ne 0 ]
+    then
+
+        echo "ERROR : PostgreSQL load failed for ${SERVER_NAME}" >> "${LOG_FILE}"
+
+        ######################################################
+        # SEND EMAIL ALERT
+        ######################################################
+
+        mail -s "Mongo to PostgreSQL Load Failed - ${SERVER_NAME}" "${EMAIL_TO}" <<EOF
+
+Mongo to PostgreSQL load failed.
+
+Server      : ${SERVER_NAME}
+CSV File    : ${CSV_FILE}
+Time        : $(date)
+
+Please check log file:
+${LOG_FILE}
+
+EOF
+
+        echo "Failure notification email sent" >> "${LOG_FILE}"
+
+        continue
+    fi
+
+    echo "SUCCESS : Data loaded into PostgreSQL table ${PG_TABLE}" >> "${LOG_FILE}"
+
+    echo "End Time : $(date)" >> "${LOG_FILE}"
+    echo "--------------------------------------------------" >> "${LOG_FILE}"
+
+done
+
+#########################
+# SCRIPT END TIME
+#########################
+
+END_TIME=$(date +%s)
+
+DURATION=$((END_TIME - START_TIME))
+
+echo "" >> "${LOG_FILE}"
+echo "==================================================" >> "${LOG_FILE}"
+echo "Script Completed : $(date)" >> "${LOG_FILE}"
+echo "Total Duration   : ${DURATION} Seconds" >> "${LOG_FILE}"
+echo "==================================================" >> "${LOG_FILE}"
+
+exit 0
+```
+
+### Example `mongo_query.js`
+
+```javascript
+// Header
+print("emp_id,emp_name,salary")
+
+db.employee.find().forEach(function(doc) {
+    print(
+        doc.emp_id + "," +
+        doc.emp_name + "," +
+        doc.salary
+    )
+})
+```
+
+### Execute Permission
+
+```bash
+chmod +x mongo_to_postgres.sh
+```
+
+### Run Script
+
+```bash
+./mongo_to_postgres.sh
+```
+
+### Recommended Improvements
+
+#### Option 1 (Best)
+
+Use `.pgpass` file instead of hardcoding PostgreSQL password.
+
+Example:
+
+```bash
+cat ~/.pgpass
+localhost:5432:postgresdb:postgres:postgres_password
+chmod 600 ~/.pgpass
+```
+
+#### Option 2
+
+Store MongoDB URI and PostgreSQL passwords in encrypted vault or environment variables for production security.
