@@ -1,0 +1,64 @@
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+
+SELECT
+    r.session_id                                            AS sessionid,
+    r.blocking_session_id,
+    DB_NAME(r.database_id)                                  AS dbname,
+    s.host_name                                             AS hostname,
+    r.start_time                                            AS starttime,
+    r.status,
+
+    r.total_elapsed_time / 1000                             AS TotalElapsedtime_sec,
+    r.cpu_time,
+    r.logical_reads,
+    r.reads                                                 AS physical_reads,
+    (r.reads + r.logical_reads)                             AS reads,
+    r.writes,
+
+    r.wait_type,
+    r.last_wait_type,
+    r.command,
+    s.program_name,
+
+    st.text                                                 AS executing_batch,
+
+    SUBSTRING
+    (
+        st.text,
+        (r.statement_start_offset / 2) + 1,
+        (
+            (
+                CASE r.statement_end_offset
+                    WHEN -1 THEN DATALENGTH(st.text)
+                    ELSE r.statement_end_offset
+                END - r.statement_start_offset
+            ) / 2
+        ) + 1
+    )                                                       AS executing_statement,
+
+    qp.query_plan                                           AS execution_plan,
+
+    CAST(mg.granted_memory_kb / 1024.0 AS DECIMAL(18,2))
+                                                            AS granted_query_memory_mb
+
+FROM sys.dm_exec_requests r
+INNER JOIN sys.dm_exec_sessions s
+    ON r.session_id = s.session_id
+
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) st
+OUTER APPLY sys.dm_exec_query_plan(r.plan_handle) qp
+
+LEFT JOIN sys.dm_exec_query_memory_grants mg
+    ON r.session_id = mg.session_id
+
+WHERE
+    r.session_id <> @@SPID
+    AND r.status IN ('running','runnable','suspended')
+
+ORDER BY
+    CASE r.status
+        WHEN 'running'   THEN 1
+        WHEN 'runnable'  THEN 2
+        WHEN 'suspended' THEN 3
+    END,
+    r.total_elapsed_time DESC;
