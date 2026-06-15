@@ -1,0 +1,37 @@
+from pymilvus import MilvusClient
+
+# Connect to Milvus
+client = MilvusClient(
+    uri="http://localhost:19530",
+    token="root:Milvus"   # Update if required
+)
+
+# Get all databases
+databases = client.list_databases()
+
+for db_name in databases:
+    print(f"\nDatabase: {db_name}")
+
+    # Switch database
+    db_client = MilvusClient(
+        uri="http://localhost:19530",
+        token="root:Milvus",
+        db_name=db_name
+    )
+
+    collections = db_client.list_collections()
+
+    for coll_name in collections:
+        try:
+            load_state = db_client.get_load_state(collection_name=coll_name)
+
+            # Depending on Milvus version, state may be string or dict
+            if str(load_state).lower().find("loaded") >= 0:
+                print(f"  [LOADED] {coll_name}")
+            else:
+                print(f"  [LOADING] {coll_name}")
+                db_client.load_collection(collection_name=coll_name)
+                print(f"  [SUCCESS] Loaded {coll_name}")
+
+        except Exception as e:
+            print(f"  [ERROR] {coll_name}: {e}")
