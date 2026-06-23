@@ -1,0 +1,82 @@
+Milvus categorizes its indexes into two primary categories: **Vector Indexes** (for similarity searches on embeddings) and **Scalar Indexes** (for traditional metadata filtering like IDs, categories, or numbers).
+
+---
+
+## 1. Vector Index Types (For Dense/Floating-Point Vectors)
+
+These indexes handle high-dimensional embedding vectors. Most use **ANNS** (Approximate Nearest Neighbors Search) to balance speed and accuracy.
+
+### 📊 Brute Force
+
+* **FLAT**
+* **Use:** Exact search with **100% recall accuracy**. It does not compress or cluster data, meaning it scans every vector one by one. Ideal for small datasets (e.g., < 10,000 vectors) where computational overhead is negligible.
+* **Example:** A critical identity matching system where you absolutely cannot afford a false negative, even if the database grows slowly.
+
+
+
+### 🗂️ Inverted File (IVF) Series
+
+IVF indexes speed up searches by partitioning the vector space into clusters (buckets). At query time, Milvus only scans the clusters closest to the query vector.
+
+* **IVF_FLAT**
+* **Use:** Good balance of speed and high accuracy. It clusters vectors but keeps the original precision data inside the clusters.
+* **Example:** A standard text search system or recommendation engine with a couple of million vectors where you want high precision with fast response times.
+
+
+* **IVF_SQ8 (Scalar Quantization)**
+* **Use:** Memory optimization. It compresses `FLOAT32` data (4 bytes) down to `INT8` (1 byte). It saves roughly 70–75% of RAM at a minor cost to accuracy.
+* **Example:** A mid-sized image search engine where your server RAM is limited, and you can tolerate a 1–2% drop in accuracy.
+
+
+* **IVF_PQ (Product Quantization)**
+* **Use:** Extreme memory savings for massive datasets. It breaks vectors down into smaller sub-vectors and compresses them drastically, which is faster than SQ8 but loses more accuracy.
+* **Example:** A massive cross-web semantic search system tracking hundreds of millions of items on a budget.
+
+
+
+### 🕸️ Graph-Based Series
+
+* **HNSW (Hierarchical Navigable Small World)**
+* **Use:** Ultra-low latency and maximum search throughput (Queries Per Second). It builds a multi-layer graph network where nodes are vectors. It consumes a **lot** of RAM but is incredibly fast.
+* **Example:** Real-time chatbots or conversational AI engines that need sub-millisecond response times across millions of vector documents.
+
+
+
+### 💾 Massive/Disk-Scale Series
+
+* **DiskANN**
+* **Use:** Large-scale datasets that cannot fit entirely into RAM. It structures data so that parts of the index live on high-speed SSDs while maintaining high search performance.
+* **Example:** A "billion-scale" corporate knowledge base where buying terabytes of RAM is financially restrictive.
+
+
+
+---
+
+## 2. Scalar Index Types (For Non-Vector Fields)
+
+These are used for structural query matching (like `WHERE age > 21` or `category == 'Tech'`).
+
+* **INVERTED (Recommended Default)**
+* **Use:** Point queries, text matching, and JSON search. It maps a distinct word or term directly to the records containing it.
+* **Example:** Filtering your vector search to only include products where `status == "in_stock"`.
+
+
+* **BITMAP**
+* **Use:** High-performance filtering on low-cardinality fields (fields with very few distinct values, typically < 500 unique values). It tracks records via tight arrays of bits (`0` or `1`).
+* **Example:** Filtering a user database where the field is `gender` or `is_premium_subscriber` (boolean values).
+
+
+* **STL_SORT**
+* **Use:** Speeds up numeric range filtering by sorting scalar fields using standard library sorting algorithms.
+* **Example:** Fetching items where a numeric field falls within a range: `WHERE price BETWEEN 10 AND 50`.
+
+
+
+---
+
+## 📝 Important Notes on Milvus Indexing
+
+* **One Index Per Field:** A vector field can only have **one** index built on it at any given time. If you build a new index type on a field, Milvus automatically replaces the old one.
+* **The "In-Memory" Requirement:** Before you can actually execute a search or query in Milvus, you must build the index **and** load the collection into memory (`collection.load()`).
+* **Trade-off Triangle:** Vector indexing is always a compromise between three pillars: **Search Speed (QPS)**, **Recall Rate (Accuracy)**, and **Memory Footprint (RAM)**. For instance, HNSW wins on speed and accuracy but loses heavily on RAM usage; IVF_PQ wins on RAM but loses on accuracy.
+* **Auto-Indexing Ease:** If you are unsure what scalar index to use, Milvus supports `AUTOINDEX`. Omitting the index parameter for scalar fields lets Milvus evaluate your data type and choose the ideal index automatically (usually choosing `INVERTED`).
