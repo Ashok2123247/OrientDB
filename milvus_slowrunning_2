@@ -1,0 +1,25 @@
+#!/bin/bash
+
+NAMESPACE=milvus
+POD=querynode-0
+OUTPUT=slow_queries.csv
+
+echo "Date,Server,Database,Collection,DurationSec" > "$OUTPUT"
+
+kubectl logs -n "$NAMESPACE" "$POD" --since=2m |
+grep "Search completed" |
+awk '
+{
+    date=$1" "$2
+    server="'$POD'"
+    db="default"
+
+    match($0,/collection=([^ ]+)/,c)
+    collection=c[1]
+
+    match($0,/latency=([0-9.]+)/,d)
+    duration=d[1]
+
+    print date","server","db","collection","duration
+}
+' >> "$OUTPUT"
