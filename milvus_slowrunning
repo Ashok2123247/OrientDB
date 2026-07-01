@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Configuration
+LOG_FILE="/var/log/milvus/proxy.log" # Update this to your Milvus proxy log path
+OUTPUT_CSV="milvus_slow_queries.csv"
+
+# Check if log file exists
+if [ ! -f "$LOG_FILE" ]; then
+    echo "Error: Log file $LOG_FILE not found."
+    exit 1
+fi
+
+# Write CSV Headers
+echo "Timestamp,TraceID,Collection,Query_Text_DSL,Duration" > "$OUTPUT_CSV"
+
+# Parse logs and append to CSV
+grep '\["Search slow"\]' "$LOG_FILE" | while read -r line; do
+    
+    # 1. Extract Timestamp (Format: [YYYY/MM/DD HH:MM:SS.mmm +TZ])
+    timestamp=$(echo "$line" | grep -oE '^\[[0-9/:\. +]+\]' | tr -d '[]')
+    
+    # 2. Extract Trace ID
+    trace_id=$(echo "$line" | grep -oE 'traceID=[a-zA-Z0-9]+' | cut -d'=' -f2)
+    
+    # 3. Extract Collection Name
+    collection=$(echo "$line" | grep -oE 'collection=[a-zA-Z0-9_\-]+' | cut -d'=' -f2)
+    
+    # 4. Extract Query Text / DSL Expression (and escape double quotes for CSV safety)
+    dsl=$(echo "$line" | grep -oE 'dsl="[^"]+"' | sed 's/dsl="//;s/"$//' | sed 's/"/""/g')
+    
+    # 5. Extract Duration
+    duration=$(echo "$line" | grep -oE 'duration=[0-9a-z\.]+' | cut -d'=' -f2)
+
+    # Output to CSV file, ensuring textual data is properly wrapped in quotes
+    echo "\"$timestamp\",\"$trace_id\",\"$collection\",\"$dsl\",\"$duration\"" >> "$OUTPUT_CSV"
+
+done
+
+echo "Extraction complete! Slow queries compiled into '$OUTPUT_CSV'."
