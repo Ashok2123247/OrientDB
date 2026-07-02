@@ -1,0 +1,173 @@
+Below are the two best approaches.
+
+## Option 1 (Best): Check Table Bloat
+
+PostgreSQL does not store table bloat directly, but you can estimate it.
+
+### Method 1: Check table size (quick check)
+
+```sql
+SELECT
+    schemaname,
+    relname AS table_name,
+    pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+    pg_size_pretty(pg_relation_size(relid)) AS table_size,
+    pg_size_pretty(pg_total_relation_size(relid) - pg_relation_size(relid)) AS indexes_toast_size
+FROM pg_catalog.pg_statio_user_tables
+ORDER BY pg_total_relation_size(relid) DESC;
+```
+
+This shows the largest tables. Large size alone does **not** necessarily mean bloat.
+
+---
+
+### Method 2: Check dead tuples (recommended)
+
+```sql
+SELECT
+    schemaname,
+    relname,
+    n_live_tup,
+    n_dead_tup,
+    ROUND((n_dead_tup * 100.0) /
+          NULLIF(n_live_tup + n_dead_tup,0),2) AS dead_tuple_pct,
+    last_vacuum,
+    last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY dead_tuple_pct DESC;
+```
+
+Interpretation:
+
+* **0–5%** → Healthy
+* **5–20%** → Monitor
+* **>20%** → Consider vacuum
+* **>40%** → Possible table bloat
+
+---
+
+### Method 3: Exact bloat estimation (requires extension)
+
+Install:
+
+```sql
+CREATE EXTENSION pgstattuple;
+```
+
+Then check:
+
+```sql
+SELECT *
+FROM pgstattuple('public.your_table');
+```
+
+Important columns:
+
+* `dead_tuple_percent`
+* `free_percent`
+
+Example:
+
+```
+dead_tuple_percent : 25%
+free_percent       : 18%
+```
+
+This indicates significant table bloat.
+
+---
+
+## Option 2: Verify Auto-Vacuum
+
+### Check when autovacuum last ran
+
+```sql
+SELECT
+    schemaname,
+    relname,
+    last_autovacuum,
+    last_autoanalyze,
+    autovacuum_count,
+    autoanalyze_count
+FROM pg_stat_user_tables
+ORDER BY last_autovacuum DESC;
+```
+
+---
+
+### Check tables needing autovacuum
+
+```sql
+SELECT
+    relname,
+    n_live_tup,
+    n_dead_tup,
+    last_autovacuum,
+    autovacuum_count
+FROM pg_stat_user_tables
+WHERE n_dead_tup > 10000
+ORDER BY n_dead_tup DESC;
+```
+
+If `last_autovacuum` is `NULL`, the table has never been autovacuumed since statistics were last reset.
+
+---
+
+### Check if autovacuum is running right now
+
+```sql
+SELECT
+    pid,
+    usename,
+    datname,
+    query_start,
+    state,
+    query
+FROM pg_stat_activity
+WHERE query ILIKE '%autovacuum%';
+```
+
+---
+
+### Check autovacuum configuration
+
+```sql
+SHOW autovacuum;
+SHOW autovacuum_max_workers;
+SHOW autovacuum_vacuum_scale_factor;
+SHOW autovacuum_analyze_scale_factor;
+SHOW autovacuum_naptime;
+```
+
+Example output:
+
+```
+autovacuum                    on
+autovacuum_max_workers        3
+autovacuum_naptime            1min
+autovacuum_vacuum_scale_factor 0.2
+```
+
+---
+
+## Best DBA Health Check Query
+
+This query gives a concise overview of table activity, dead tuples, and autovacuum status:
+
+```sql
+SELECT
+    schemaname,
+    relname AS table_name,
+    n_live_tup,
+    n_dead_tup,
+    ROUND((n_dead_tup * 100.0) /
+          NULLIF(n_live_tup + n_dead_tup, 0), 2) AS dead_pct,
+    last_autovacuum,
+    autovacuum_count,
+    last_autoanalyze,
+    autoanalyze_count
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC;
+```
+
+This is an excellent first step for identifying tables that may be suffering from bloat or are not being vacuumed frequently enough.
