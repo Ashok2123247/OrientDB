@@ -1,0 +1,492 @@
+For a **6+ years experienced MongoDB Database Administrator**, interviewers usually focus on **real-time production scenarios** rather than basic commands. Below are the **best** advanced MongoDB interview questions followed by additional scenario-based questions.
+
+---
+
+# 1. Production Performance Issues (Most Important)
+
+### Q1. A query suddenly started taking 30 seconds instead of 200ms. How would you troubleshoot?
+
+**Expected Discussion**
+
+* Check current operations
+* Check execution plan
+* Compare index usage
+* Review recent deployments
+* Check server resources
+* Check lock percentage
+* Check replication lag
+* Check cache eviction
+
+Commands
+
+```javascript
+db.currentOp()
+
+db.collection.find({...}).explain("executionStats")
+
+db.collection.getIndexes()
+
+db.serverStatus()
+
+db.adminCommand({top:1})
+```
+
+---
+
+### Q2. CPU utilization is 100% on MongoDB production. What will you check first?
+
+Expected Answer
+
+* Current running operations
+* Slow queries
+* Collection scan
+* Index usage
+* WiredTiger cache
+* Disk I/O
+* Replication status
+
+---
+
+### Q3. Memory utilization is continuously increasing. What could be the reasons?
+
+Possible Reasons
+
+* Working set larger than RAM
+* Missing indexes
+* Large aggregation
+* Long-running transactions
+* Cursor not closed
+* Huge cache usage
+* Memory fragmentation
+
+---
+
+# 2. Replication
+
+### Q4. Primary server suddenly crashed. What happens?
+
+Expected Answer
+
+* Heartbeat fails
+* Election begins
+* Highest priority secondary becomes Primary
+* Applications reconnect
+* Writes resume
+
+Follow-up
+
+How long does election take?
+
+Answer
+
+Usually **5-15 seconds** depending on configuration.
+
+---
+
+### Q5. Secondary is 8 hours behind Primary. How do you troubleshoot?
+
+Check
+
+```javascript
+rs.status()
+
+rs.printSecondaryReplicationInfo()
+```
+
+Possible Reasons
+
+* Slow disk
+* Network latency
+* Large index build
+* Heavy writes
+* CPU bottleneck
+
+---
+
+### Q6. Rollback occurred after Primary election. Why?
+
+Expected Answer
+
+Writes not replicated before Primary crash.
+
+Need to investigate
+
+```javascript
+local.oplog.rs
+```
+
+---
+
+# 3. Oplog
+
+### Q7. Oplog is getting full every few hours. What will happen?
+
+Expected Answer
+
+Secondaries may fail to catch up.
+
+Need
+
+* Increase oplog size
+* Reduce write load
+* Fix replication delay
+
+---
+
+### Q8. How do you calculate required oplog size?
+
+Expected
+
+Based on
+
+* Write rate
+* Recovery window
+* Disaster recovery requirements
+
+---
+
+# 4. Indexing
+
+### Q9. Compound index exists but MongoDB still performs Collection Scan.
+
+Why?
+
+Possible reasons
+
+* Wrong index order
+* Query predicate mismatch
+* Low selectivity
+* Different sort order
+* Index hidden
+* Partial index mismatch
+
+---
+
+### Q10. Which index should you create?
+
+Query
+
+```javascript
+{
+ country:"India",
+ city:"Hyderabad",
+ age:25
+}
+```
+
+Sort
+
+```javascript
+age:-1
+```
+
+Expected
+
+```javascript
+{
+country:1,
+city:1,
+age:-1
+}
+```
+
+---
+
+# 5. Aggregation
+
+### Q11. Aggregation takes 15 minutes.
+
+How do you optimize?
+
+Expected
+
+* Early $match
+* Early $project
+* Index usage
+* Reduce lookup
+* Avoid unwind
+* Use explain()
+
+---
+
+### Q12. Why is $lookup slow?
+
+Answer
+
+* No index
+* Large collection
+* High cardinality
+* Full scan
+
+---
+
+# 6. Sharding
+
+### Q13. Chunk migration is very slow.
+
+What do you check?
+
+Answer
+
+* Jumbo chunks
+* Balancer status
+* Network
+* Chunk size
+* Disk speed
+
+---
+
+### Q14. Which shard key would you choose?
+
+Collection
+
+Orders
+
+Fields
+
+```
+CustomerID
+
+OrderDate
+
+Country
+
+Status
+```
+
+Expected
+
+Depends on query pattern.
+
+Usually
+
+```
+CustomerID
+```
+
+or
+
+```
+CustomerID + OrderDate
+```
+
+Avoid
+
+```
+Status
+```
+
+because of low cardinality.
+
+---
+
+### Q15. Hot shard problem occurred.
+
+How do you solve?
+
+Expected
+
+* Better shard key
+* Reshard collection
+* Hash shard key
+* Zone sharding
+
+---
+
+# 7. Transactions
+
+### Q16. Transactions suddenly become slow.
+
+Possible reasons
+
+* Large transaction
+* Lock contention
+* Replication delay
+* Snapshot size
+* Cache pressure
+
+---
+
+### Q17. Why should long-running transactions be avoided?
+
+Because
+
+* Hold locks
+* Increase cache usage
+* Delay oplog truncation
+* Reduce throughput
+
+---
+
+# 8. Backup & Recovery
+
+### Q18. Production database accidentally dropped.
+
+Recovery options?
+
+Expected
+
+* Restore latest backup
+* Restore PITR
+* Recover oplog
+* Validate consistency
+
+---
+
+### Q19. Difference between mongodump and filesystem snapshot?
+
+Answer
+
+mongodump
+
+* Logical
+* Portable
+* Slower
+
+Filesystem snapshot
+
+* Faster
+* Storage level
+* Better for TB-sized databases
+
+---
+
+# 9. Monitoring
+
+### Q20. Which metrics do you monitor daily?
+
+Expected
+
+* Opcounters
+* Connections
+* Active operations
+* Cache usage
+* Dirty cache
+* Tickets available
+* Replication lag
+* Slow queries
+* Disk latency
+* CPU
+* Memory
+* Locks
+* Page faults
+
+---
+
+# 10. WiredTiger
+
+### Q21. Explain WiredTiger Cache.
+
+Expected
+
+* Frequently accessed data stored in memory
+* Default around 50% of RAM minus 1 GB
+* Dirty pages flushed to disk
+* Eviction manages memory usage
+
+---
+
+### Q22. What happens when cache becomes full?
+
+Expected
+
+* Eviction starts
+* Writes slow down
+* Read latency increases
+* Throughput decreases
+
+---
+
+# 11. Real-Time Troubleshooting
+
+### Q23. Users report application timeout.
+
+How do you investigate?
+
+Steps
+
+1. Check application logs
+2. Check MongoDB logs
+3. Check slow queries
+4. Check locks
+5. Check replication
+6. Check CPU
+7. Check disk
+8. Check network
+9. Review recent changes
+
+---
+
+### Q24. One collection occupies 2 TB while actual data is only 500 GB.
+
+Reason?
+
+Possible reasons
+
+* Fragmentation
+* Deleted documents
+* Large indexes
+* Preallocated space
+
+Solution
+
+```
+compact
+
+or
+
+Resync
+
+or
+
+Initial Sync
+```
+
+---
+
+### Q25. MongoDB restarted automatically.
+
+What logs will you investigate?
+
+Expected
+
+MongoDB logs
+
+```
+mongod.log
+```
+
+System logs
+
+```
+journalctl
+
+dmesg
+
+/var/log/messages
+```
+
+Check
+
+* OOM Killer
+* Kernel panic
+* Disk full
+* Segmentation fault
+* Manual restart
+
+---
+
+# 12. Real Production Scenario Questions
+
+* A secondary is stuck in `RECOVERING`. How do you resolve it?
+* Replication lag suddenly increased after creating an index. Why?
+* Hidden secondary is out of sync. What actions would you take?
+* Oplog window reduced from 24 hours to 2 hours. What could cause this?
+* A sharded cluster's balancer is not moving chunks. How would you investigate?
+* After upgrading MongoDB, application latency increased. What areas would you examine?
+* `mongostat` shows high queued readers and writers. What does it indicate?
+* An index build is affecting application performance. How can you minimize its impact?
+* A collection scan appears despite indexes being present. How do you identify the root cause?
+* A backup completed successfully, but the restore failed. What validation steps should be part of every backup strategy?
+
+These questions closely reflect the types of production incidents and troubleshooting discussions that are common in MongoDB interviews for **6+ years of DBA experience**, where interviewers expect practical diagnostics, root-cause analysis, and operational decision-making rather than memorized definitions.
