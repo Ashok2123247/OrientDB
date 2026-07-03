@@ -50,3 +50,81 @@ done
 
 echo "--------------------------------------------------------"
 echo "Cleanup complete."
+
+
+
+
+
+
+
+
+
+
+
+## for multiple dbs
+#!/bin/bash
+
+# Configuration
+CONFIG_PATH="config/backup.yaml"
+DAYS_TO_KEEP=5
+
+# Add all your database names/prefixes here (space-separated)
+DATABASES=("dbname" "prod_db" "analytics_db")
+
+# Calculate the threshold date in seconds since epoch (Works on both Linux and macOS)
+if date -d "@0" >/dev/null 2>&1; then
+    # GNU/Linux date
+    THRESHOLD_DATE=$(date -d "$DAYS_TO_KEEP days ago" +%Y%m%d)
+    THRESHOLD_SECS=$(date -d "$THRESHOLD_DATE" +%s)
+else
+    # BSD/macOS date
+    THRESHOLD_DATE=$(date -v-"${DAYS_TO_KEEP}"d +%Y%m%d)
+    THRESHOLD_SECS=$(date -j -f "%Y%m%d" "$THRESHOLD_DATE" +%s)
+fi
+
+echo "Target: Deleting backups older than $THRESHOLD_DATE (older than $DAYS_TO_KEEP days)..."
+echo "--------------------------------------------------------"
+
+# Loop through each database in the array
+for db in "${DATABASES[@]}"; do
+    echo "Processing backups for database: $db"
+    echo "--------------------------------------------------------"
+
+    # Fetch and filter the backup list for the specific database
+    milvus-backup list --config "$CONFIG_PATH" | egrep "$db" | tail -n +2 | while read -r backup_name; do
+        
+        # Extract the YYYYMMDD date part from the backup name
+        backup_date=$(echo "$backup_name" | grep -oE '[0-9]{8}')
+        
+        # Skip if no valid 8-digit date is found in the name
+        if [ -z "$backup_date" ]; then
+            echo "Skipping invalid backup format: $backup_name"
+            continue
+        fi
+
+        # Convert the backup date to seconds since epoch
+        if date -d "@0" >/dev/null 2>&1; then
+            backup_secs=$(date -d "$backup_date" +%s 2>/dev/null)
+        else
+            backup_secs=$(date -j -f "%Y%m%d" "$backup_date" +%s 2>/dev/null)
+        fi
+
+        # If the backup date is valid and older than our threshold, delete it
+        if [ -n "$backup_secs" ] && [ "$backup_secs" -lt "$THRESHOLD_SECS" ]; then
+            echo "Deleting old backup: $backup_name"
+            
+            # Executes the delete command
+            milvus-backup delete --config "$CONFIG_PATH" --name "$backup_name"
+        else
+            echo "Keeping backup: $backup_name"
+        fi
+    done
+    echo "--------------------------------------------------------"
+done
+
+echo "Cleanup complete for all specified databases."
+
+
+
+
+
