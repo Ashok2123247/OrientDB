@@ -18,3 +18,10 @@ JOIN sys.master_files mf
 ON vfs.database_id = mf.database_id
 AND vfs.file_id = mf.file_id
 ORDER BY AvgWriteLatency_ms DESC;
+
+< 5 ms: Excellent
+5–10 ms: Good
+10–20 ms: Acceptable
+20–50 ms: Concerning
+> 50 ms: Poor
+> 100 ms: Critical
