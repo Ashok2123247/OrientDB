@@ -1,0 +1,20 @@
+SELECT
+    DB_NAME(vfs.database_id) AS DatabaseName,
+    mf.physical_name,
+    vfs.io_stall_read_ms,
+    vfs.io_stall_write_ms,
+    vfs.num_of_reads,
+    vfs.num_of_writes,
+    CASE
+        WHEN vfs.num_of_reads = 0 THEN 0
+        ELSE vfs.io_stall_read_ms / vfs.num_of_reads
+    END AS AvgReadLatency_ms,
+    CASE
+        WHEN vfs.num_of_writes = 0 THEN 0
+        ELSE vfs.io_stall_write_ms / vfs.num_of_writes
+    END AS AvgWriteLatency_ms
+FROM sys.dm_io_virtual_file_stats(NULL,NULL) vfs
+JOIN sys.master_files mf
+ON vfs.database_id = mf.database_id
+AND vfs.file_id = mf.file_id
+ORDER BY AvgWriteLatency_ms DESC;
