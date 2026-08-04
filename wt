@@ -1,0 +1,7 @@
+const wt = db.runCommand({ serverStatus: 1 }).wiredTiger.cache;
+printjson({
+  maxCacheBytes: wt["maximum bytes configured"],
+  currentlyInCacheBytes: wt["bytes currently in the cache"],
+  dirtyBytes: wt["tracked dirty bytes in the cache"],
+  dirtyPercentage: ((wt["tracked dirty bytes in the cache"] / wt["maximum bytes configured"]) * 100).toFixed(2) + "%"
+});
