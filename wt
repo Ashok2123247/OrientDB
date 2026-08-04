@@ -5,3 +5,37 @@ printjson({
   dirtyBytes: wt["tracked dirty bytes in the cache"],
   dirtyPercentage: ((wt["tracked dirty bytes in the cache"] / wt["maximum bytes configured"]) * 100).toFixed(2) + "%"
 });
+
+
+
+db.getCollection("your_log_collection_name").aggregate([
+  // 1. Filter for your specific collection and query type
+  {
+    $match: {
+      "c": "COMMAND",
+      // Match the collection name inside the command (e.g., insert, find, update, delete)
+      $or: [
+        { "attr.command.find": "your_target_collection" },
+        { "attr.command.insert": "your_target_collection" },
+        { "attr.command.update": "your_target_collection" },
+        { "attr.command.delete": "your_target_collection" }
+      ]
+      // Optional: Add further filters if you want a specific query filter/shape
+      // "attr.command.filter.someField": "someValue" 
+    }
+  },
+  // 2. Group by the hour of the day
+  {
+    $group: {
+      _id: {
+        hour: { $hour: "$t" } // Extracts the hour (0-23) from the timestamp field 't'
+      },
+      avgDurationMillis: { $avg: "$attr.millis" }, // Calculate average duration
+      totalQueries: { $sum: 1 } // Count how many queries ran in that hour
+    }
+  },
+  // 3. Sort chronologically by hour
+  {
+    $sort: { "_id.hour": 1 }
+  }
+])
