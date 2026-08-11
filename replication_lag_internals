@@ -1,0 +1,626 @@
+Yes. The key is to **separate “MongoDB lock contention” from general database latency**. Modern MongoDB with WiredTiger is not a traditional “one big database lock” system, so looking only at `globalLock` metrics can be misleading.
+
+### 1. First, understand what is actually being locked
+
+With WiredTiger, normal reads/writes use **document-level concurrency** and optimistic concurrency control. At the MongoDB layer, most normal operations take intent locks (`IS`/`IX`) at global/database/collection levels rather than holding an exclusive collection/global lock. Actual conflicting writes are handled through WiredTiger write conflicts and retries. ([MongoDB][1])
+
+So the important distinction is:
+
+```text
+Application operation
+       │
+       ├── MongoDB lock acquisition
+       │       └── waiting for conflicting lock?
+       │
+       ├── WiredTiger concurrency
+       │       └── write conflict / retry?
+       │
+       ├── Storage engine
+       │       └── cache / eviction / checkpoint / journal
+       │
+       ├── CPU / I/O / memory
+       │
+       └── Replication
+               └── oplog apply → replication lag
+```
+
+For the problem you're interested in, I'd measure **all five layers simultaneously**.
+
+---
+
+# 2. The most useful lock metrics
+
+For MongoDB 6.x/7.x/8.x, I'd start with `currentOp` and the profiler.
+
+`currentOp` exposes:
+
+* `waitingForLock`
+* `lockStats.acquireCount`
+* `lockStats.acquireWaitCount`
+* `lockStats.timeAcquiringMicros`
+* `lockStats.deadlockCount`
+
+MongoDB explicitly defines `timeAcquiringMicros` as the cumulative time an operation waited to acquire locks. ([MongoDB][2])
+
+The most useful derived metric is:
+
+```text
+lock_wait_ratio =
+    acquireWaitCount / acquireCount
+```
+
+and:
+
+```text
+avg_lock_wait_us =
+    timeAcquiringMicros / acquireWaitCount
+```
+
+For example:
+
+```text
+acquireCount       = 10,000
+acquireWaitCount   = 500
+timeAcquiringMicros = 2,000,000
+```
+
+means approximately:
+
+```text
+5% of acquisitions waited
+
+average wait ≈ 2,000,000 / 500
+             ≈ 4 ms
+```
+
+That is much more useful than simply saying "MongoDB has locks."
+
+---
+
+# 3. Profiler is probably your best tool for the latency question
+
+If your question is:
+
+> "Are locks causing my application latency?"
+
+then I would strongly recommend using the MongoDB profiler/slow-operation data.
+
+Profiler records contain the same useful lock information, including:
+
+* `acquireWaitCount`
+* `timeAcquiringMicros`
+* `deadlockCount`
+
+MongoDB documents `timeAcquiringMicros / acquireWaitCount` as an approximate average lock acquisition wait time. ([MongoDB][3])
+
+This lets you build a relationship like:
+
+```text
+query latency
+     │
+     ├── execution time
+     │
+     ├── lock wait time
+     │
+     ├── flow-control wait
+     │
+     └── other storage/network effects
+```
+
+For example, suppose you see:
+
+| Query    | p95 latency | Lock wait | CPU |
+| -------- | ----------: | --------: | --: |
+| update A |       20 ms |    0.2 ms | 40% |
+| update B |      250 ms |    180 ms | 45% |
+| update C |       30 ms |    0.3 ms | 80% |
+
+That is extremely strong evidence that **B's latency is primarily contention-related**, rather than CPU saturation.
+
+---
+
+# 4. Don't confuse lock waits with WiredTiger ticket contention
+
+This is an important MongoDB internal distinction.
+
+WiredTiger has concurrency controls/tickets in addition to MongoDB locks.
+
+MongoDB specifically says that a low `wiredTiger.concurrentTransactions` value **does not itself indicate overload**. The number of **queued read/write tickets** is more useful for identifying overload. ([MongoDB][1])
+
+So I'd monitor:
+
+```text
+wiredTiger.concurrentTransactions
+```
+
+and especially:
+
+```text
+read tickets available / queued
+write tickets available / queued
+```
+
+Conceptually:
+
+```text
+                  ┌── MongoDB lock contention
+Operation ────────┤
+                  ├── WiredTiger ticket contention
+                  │
+                  ├── Write conflict
+                  │
+                  └── Storage contention
+```
+
+These are different bottlenecks.
+
+---
+
+# 5. Replication lag is where this gets particularly interesting
+
+If your concern is:
+
+> "Can locks cause replication lag?"
+
+the answer is **yes, but don't assume that lag means locking**.
+
+Replication works roughly like:
+
+```text
+PRIMARY
+   │
+   │ write
+   ▼
+oplog
+   │
+   │ network
+   ▼
+SECONDARY
+   │
+   │ oplog application
+   ▼
+WiredTiger
+```
+
+Replication lag is the delay between an operation occurring on the primary and being applied on the secondary. ([MongoDB][4])
+
+A secondary can fall behind because of:
+
+* CPU saturation
+* disk latency
+* WiredTiger cache pressure
+* eviction
+* checkpoint pressure
+* network problems
+* expensive queries competing for resources
+* write conflicts
+* lock contention
+* high write volume
+
+Therefore, you need to correlate **lag with lock wait**, rather than assuming causality.
+
+---
+
+# 6. One particularly important metric: WiredTiger cache pressure
+
+When investigating replication lag, I would absolutely monitor:
+
+```javascript
+db.serverStatus().wiredTiger.cache
+```
+
+especially:
+
+```text
+bytes currently in the cache
+tracked dirty bytes in the cache
+pages evicted by application threads
+pages read into cache
+pages written from cache
+```
+
+MongoDB specifically points to:
+
+```javascript
+db.serverStatus().wiredTiger.cache[
+    'pages evicted by application threads'
+]
+```
+
+as an indicator of cache pressure. If it is increasing, application threads are being forced to perform eviction work, which can increase replication lag. ([MongoDB][5])
+
+This gives you an interesting diagnostic pattern:
+
+```text
+Replication lag
+       │
+       ├── Lock wait ↑ ?
+       │
+       ├── WT ticket queue ↑ ?
+       │
+       ├── WT cache pressure ↑ ?
+       │
+       ├── Disk latency ↑ ?
+       │
+       └── CPU ↑ ?
+```
+
+---
+
+# 7. Flow control is another thing you should measure
+
+On a replica set, this becomes very important.
+
+MongoDB can use **flow control** to slow writes on the primary when majority commit lag gets too high. ([MongoDB][6])
+
+`serverStatus()` exposes things such as:
+
+```text
+flowControl.targetRateLimit
+flowControl.timeAcquiringMicros
+flowControl.isLagged
+flowControl.isLaggedCount
+flowControl.isLaggedTimeMicros
+flowControl.locksPerKiloOp
+```
+
+MongoDB documents `timeAcquiringMicros` as the time writes spent waiting for flow-control tickets. ([MongoDB][7])
+
+This is extremely useful because otherwise you could incorrectly conclude:
+
+> "MongoDB locks are causing my writes to slow down."
+
+when the actual chain is:
+
+```text
+Secondary becomes slow
+        ↓
+majority commit lag increases
+        ↓
+flow control activates
+        ↓
+primary writes wait for tickets
+        ↓
+application latency increases
+```
+
+That is **not the same thing as lock contention**.
+
+---
+
+# 8. I would build a measurement dashboard like this
+
+If I were investigating this in production, I'd create roughly these groups.
+
+### A. Application latency
+
+```text
+operation rate
+p50 latency
+p95 latency
+p99 latency
+slow operations/sec
+```
+
+Break it down by:
+
+```text
+namespace
+operation type
+query shape
+command
+```
+
+---
+
+### B. MongoDB lock contention
+
+```text
+lock acquire count
+lock acquire wait count
+lock wait time
+average lock wait
+operations waiting for lock
+deadlocks
+```
+
+The most important graph is:
+
+```text
+lock_wait_time / operation
+```
+
+rather than merely:
+
+```text
+number_of_locks
+```
+
+---
+
+### C. WiredTiger contention
+
+```text
+read tickets queued
+write tickets queued
+
+read tickets available
+write tickets available
+
+write conflicts
+```
+
+---
+
+### D. Storage
+
+```text
+CPU
+disk IOPS
+disk throughput
+disk latency
+fsync/journal latency
+WiredTiger cache usage
+dirty cache
+eviction
+checkpoint duration
+```
+
+MongoDB's `serverStatus` exposes substantial WiredTiger statistics, including cache, eviction, log/journal, and transaction/checkpoint information. ([MongoDB][7])
+
+---
+
+### E. Replication
+
+```text
+replication lag
+oplog application rate
+oplog generation rate
+secondary CPU
+secondary disk latency
+secondary cache pressure
+flow-control time
+flow-control activation
+```
+
+---
+
+# 9. The really useful analysis: calculate "latency explained by locks"
+
+This is where I'd go beyond simply monitoring metrics.
+
+For every slow operation, collect:
+
+```text
+operation latency
+lock wait time
+flow-control wait time
+execution time
+```
+
+Then conceptually:
+
+```text
+total latency
+    ≈
+    execution
+  + lock wait
+  + flow-control wait
+  + other waiting
+```
+
+Then calculate:
+
+```text
+lock_wait_percentage =
+    lock_wait_time / operation_latency
+```
+
+For example:
+
+```text
+p99 latency             = 400 ms
+p99 lock wait           = 250 ms
+
+lock contribution       ≈ 62.5%
+```
+
+That gives you a much stronger answer than:
+
+> "There is lock contention."
+
+You can say:
+
+> "At p99, approximately 63% of operation latency is attributable to lock acquisition waits."
+
+You should treat this as an approximation rather than an exact decomposition, because the measurements have different scopes and timing semantics.
+
+---
+
+# 10. Then correlate it with replication lag
+
+This is probably the experiment you're ultimately looking for.
+
+Collect time-series data at, say, 5–10 second resolution:
+
+```text
+timestamp
+ops/sec
+p95 latency
+p99 latency
+
+lock acquisitions/sec
+lock waits/sec
+lock wait μs/sec
+
+WT write conflicts/sec
+WT queued tickets
+
+CPU
+disk latency
+cache utilization
+dirty bytes
+eviction
+
+replication lag
+oplog apply rate
+
+flow-control wait
+```
+
+Then look for patterns like:
+
+### Case A — Lock contention
+
+```text
+lock wait       █████████████
+latency         ███████████
+CPU              ████
+disk             ███
+replication lag  ███████
+```
+
+Likely contention.
+
+### Case B — Disk bottleneck
+
+```text
+lock wait       ██
+latency         █████████
+CPU              ███
+disk latency    █████████████
+replication lag ██████████
+```
+
+Probably **not primarily locks**.
+
+### Case C — Secondary cache pressure
+
+```text
+primary lock wait      ██
+secondary eviction     ███████████
+secondary disk latency █████████
+replication lag        █████████████
+```
+
+Again, lag isn't primarily caused by locks.
+
+### Case D — Flow control
+
+```text
+secondary lag          █████████
+flow control            █████████
+primary write latency   ████████
+lock wait               ██
+```
+
+The primary is being throttled because the secondary is behind.
+
+---
+
+# 11. One metric I would pay special attention to
+
+MongoDB 8.x now has `lockContentionMetrics` in `serverStatus`. MongoDB describes these as metrics for identifying contention at internal coordination points, and notes that contention can become a noticeable performance bottleneck. ([MongoDB][7])
+
+You can request them with:
+
+```javascript
+db.runCommand({
+    serverStatus: 1,
+    lockContentionMetrics: 1
+})
+```
+
+or:
+
+```javascript
+db.runCommand({
+    serverStatus: 1,
+    lockContentionMetrics: { listAll: 1 }
+})
+```
+
+This is particularly interesting if you're investigating **MongoDB internal mutex/lock contention**, rather than only operation-level lock waits.
+
+---
+
+# 12. My recommended investigation methodology
+
+I'd approach your problem in this order:
+
+```text
+                 ┌─────────────────────┐
+                 │ Application latency │
+                 └──────────┬──────────┘
+                            │
+                 Is latency increasing?
+                            │
+                            ▼
+                 ┌─────────────────────┐
+                 │ Profiler/currentOp  │
+                 └──────────┬──────────┘
+                            │
+                    lock wait high?
+                      /           \
+                    YES            NO
+                    │               │
+                    ▼               ▼
+             Lock analysis      WT/storage
+                    │             analysis
+                    ▼
+          Which lock / operation?
+                    │
+                    ▼
+        Correlate with replication
+                    │
+           ┌────────┴─────────┐
+           ▼                  ▼
+       lag increases       no lag
+           │                  │
+           ▼                  ▼
+    secondary bottleneck   primary contention
+```
+
+The crucial thing is **correlation across dimensions**, not looking at one MongoDB metric in isolation.
+
+---
+
+## If you want to go deeper into MongoDB internals
+
+I can take this one level deeper and explain the actual internal path of a MongoDB write, roughly:
+
+```text
+client
+  ↓
+MongoDB operation
+  ↓
+Global/DB/collection intent locks
+  ↓
+WiredTiger session
+  ↓
+WiredTiger transaction
+  ↓
+MVCC snapshot
+  ↓
+document/record modification
+  ↓
+write conflict handling
+  ↓
+journal
+  ↓
+oplog
+  ↓
+replication
+```
+
+and, importantly, show **exactly where a lock wait, WiredTiger write conflict, ticket wait, disk wait, and replication lag can occur**, with the corresponding `serverStatus`, `currentOp`, profiler and OS metrics to measure each one.
+
+That would give you a fairly complete **MongoDB lock/latency/lag measurement model** rather than just a list of commands.
+
+[1]: https://www.mongodb.com/docs/v7.0/core/wiredtiger/?utm_source=chatgpt.com "WiredTiger Storage Engine - Database Manual v7.0 - MongoDB Docs"
+[2]: https://www.mongodb.com/docs/manual/reference/command/currentop/?utm_source=chatgpt.com "currentOp (database command) - Database Manual - MongoDB Docs"
+[3]: https://www.mongodb.com/docs/v8.0/reference/database-profiler/?utm_source=chatgpt.com "Database Profiler Output - Database Manual v8.0 - MongoDB Docs"
+[4]: https://www.mongodb.com/docs/v8.0/core/replica-set-oplog/?utm_source=chatgpt.com "Replica Set Oplog - Database Manual v8.0 - MongoDB Docs"
+[5]: https://www.mongodb.com/docs/v8.0/troubleshooting/replication-lag/?utm_source=chatgpt.com "Troubleshoot Replication Lag - Database Manual v8.0 - MongoDB Docs"
+[6]: https://www.mongodb.com/docs/manual/replication/?featured_on=talkpython&utm_source=chatgpt.com "Replication - Database Manual - MongoDB Docs"
+[7]: https://www.mongodb.com/docs/manual/reference/command/serverstatus/?utm_source=chatgpt.com "serverStatus (database command) - Database Manual - MongoDB Docs"
