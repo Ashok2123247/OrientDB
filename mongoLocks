@@ -1,0 +1,42 @@
+const s = db.runCommand({ serverStatus: 1 });
+
+print([
+  "timestamp",
+  "lock_type",
+  "lock_mode",
+  "acquire_count",
+  "acquire_wait_count",
+  "time_acquiring_micros",
+  "average_wait_micros",
+  "deadlock_count",
+  "current_queue_total",
+  "current_queue_readers",
+  "current_queue_writers"
+].join(","));
+
+for (const [lockType, lockModes] of Object.entries(s.locks || {})) {
+  for (const [lockMode, metrics] of Object.entries(lockModes || {})) {
+
+    const acquireWaitCount = metrics.acquireWaitCount || 0;
+    const timeAcquiringMicros = metrics.timeAcquiringMicros || 0;
+
+    const averageWaitMicros =
+      acquireWaitCount > 0
+        ? timeAcquiringMicros / acquireWaitCount
+        : 0;
+
+    print([
+      new Date().toISOString(),
+      lockType,
+      lockMode,
+      metrics.acquireCount || 0,
+      acquireWaitCount,
+      timeAcquiringMicros,
+      averageWaitMicros,
+      metrics.deadlockCount || 0,
+      s.globalLock?.currentQueue?.total || 0,
+      s.globalLock?.currentQueue?.readers || 0,
+      s.globalLock?.currentQueue?.writers || 0
+    ].join(","));
+  }
+}
