@@ -1,0 +1,62 @@
+var s = db.runCommand({ serverStatus: 1 });
+
+print("timestamp,lock_type,lock_mode,acquire_count,acquire_wait_count,time_acquiring_micros,average_wait_micros,deadlock_count,current_queue_total,current_queue_readers,current_queue_writers");
+
+var timestamp = new Date().toISOString();
+
+for (var lockType in s.locks) {
+    if (!s.locks.hasOwnProperty(lockType)) {
+        continue;
+    }
+
+    var lockModes = s.locks[lockType];
+
+    for (var lockMode in lockModes) {
+        if (!lockModes.hasOwnProperty(lockMode)) {
+            continue;
+        }
+
+        var metrics = lockModes[lockMode];
+
+        var acquireCount = metrics.acquireCount || 0;
+        var acquireWaitCount = metrics.acquireWaitCount || 0;
+        var timeAcquiringMicros = metrics.timeAcquiringMicros || 0;
+        var deadlockCount = metrics.deadlockCount || 0;
+
+        var averageWaitMicros = 0;
+
+        if (acquireWaitCount > 0) {
+            averageWaitMicros =
+                timeAcquiringMicros / acquireWaitCount;
+        }
+
+        var currentQueueTotal = 0;
+        var currentQueueReaders = 0;
+        var currentQueueWriters = 0;
+
+        if (s.globalLock && s.globalLock.currentQueue) {
+            currentQueueTotal =
+                s.globalLock.currentQueue.total || 0;
+
+            currentQueueReaders =
+                s.globalLock.currentQueue.readers || 0;
+
+            currentQueueWriters =
+                s.globalLock.currentQueue.writers || 0;
+        }
+
+        print(
+            timestamp + "," +
+            lockType + "," +
+            lockMode + "," +
+            acquireCount + "," +
+            acquireWaitCount + "," +
+            timeAcquiringMicros + "," +
+            averageWaitMicros + "," +
+            deadlockCount + "," +
+            currentQueueTotal + "," +
+            currentQueueReaders + "," +
+            currentQueueWriters
+        );
+    }
+}
