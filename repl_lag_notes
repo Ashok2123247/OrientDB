@@ -1,0 +1,262 @@
+If C is a member of the same replica set and has voting rights, then we need to determine whether C participates in the majority calculation. 
+replSetGetStatus exposes majorityVoteCount, writeMajorityCount, votingMembersCount, and each member's replication optime.
+
+If C is non-voting, it is much less likely to directly cause primary-side flow control, 
+although C can still have its own replication lag and may be a problem for your standby/recovery objectives.
+
+2. The strongest proof that C is causing the lag
+
+Don't start with CPU/RAM. Start with timestamps.
+
+During an application-lag event, collect these four things:
+
+Evidence	What you want to see
+Application latency	Latency increases at T1
+C replication lag	C's lag increases at/just before T1
+C resources	CPU/disk/cache/IO wait increases at same time
+Primary flow control	isLagged=true, reduced targetRateLimit, increased ticket acquisition time
+
+The most convincing pattern would be:
+
+C resource saturation → C replication falls behind → majority commit lag increases → flow control activates → primary write throughput is throttled → application latency increases.
+That is considerably stronger evidence than simply observing "C has less CPU/RAM."
+
+MongoDB's replSetGetStatus gives you optimeDate, optimeWrittenDate, lastAppliedWallTime, syncSourceHost, and pingMs, which are exactly the fields I would use to establish this relationship.
+
+
+
+db.adminCommand({ replSetGetStatus: 1 })
+or rs.status()
+
+majorityVoteCount
+writeMajorityCount
+votingMembersCount
+writableVotingMembersCount
+
+each member
+name
+stateStr
+votes
+priority
+optimeDate
+optimeDurableDate
+lastHeartbeat
+pingMs
+syncSourceHost
+
+
+MongoDB documents writeMajorityCount as the number of data-bearing voting members required for majority write concern
+
+Suppose you have:
+
+A = PRIMARY     votes=1
+B = SECONDARY   votes=1
+C = SECONDARY   votes=1
+D = ARBITER     votes=1
+
+Then C can potentially influence majority behavior.
+
+But if:
+
+A = PRIMARY     votes=1
+B = SECONDARY   votes=1
+C = SECONDARY   votes=0
+D = ARBITER     votes=1
+
+C's replication performance is much less likely to be the direct reason for primary flow control.
+
+This is the first thing I would verify.
+
+2. check C replication lag
+
+3. db.adminCommand({ replSetGetStatus: 1 }).syncSourceHost
+
+This means C is getting its replication stream from B.
+
+A → B replication lag
+B → C replication lag
+
+A → B = 1 sec
+B → C = 60 sec
+
+then C itself is probably the bottleneck for C's replication.
+
+However, whether that causes primary-side flow control depends on C's voting/majority role. That's why checking the replica-set configuration is essential.
+
+
+Normal:
+isLagged = false
+timeAcquiringMicros = low
+targetRateLimit = high
+
+Incident:
+C lag = 45 sec
+isLagged = true
+targetRateLimit ↓
+timeAcquiringMicros ↑↑
+application latency ↑
+That is strong evidence of a flow-control-related application slowdown.
+
+
+Secondary falls behind
+        ↓
+Majority commit lag increases
+        ↓
+Flow control activates
+        ↓
+Primary limits write rate
+        ↓
+Application write latency/throughput can deteriorate
+
+So flow control is usually a consequence of replication pressure, not necessarily the original cause.
+
+MongoDB describes flow control as limiting primary write application so that majority-committed lag remains under the configured target.
+
+Therefore:
+
+Flow control increasing does not prove C is responsible.
+
+You have to identify which member is causing the majority commit point to fall behind.
+
+MongoDB's replication-lag troubleshooting documentation specifically identifies secondary resource exhaustion as a potential cause of replication lag
+
+Timestamp
+Application latency
+Primary CPU
+Primary disk latency
+C CPU
+C disk latency
+C replication lag
+B replication lag
+C syncSourceHost
+FlowControl isLagged
+FlowControl targetRateLimit
+FlowControl timeAcquiringMicros
+Majority commit lag
+
+19:00:00
+C CPU      45%
+C lag       1 sec
+FlowControl false
+App latency 100 ms
+
+19:02:00
+C CPU      95%
+C disk     90%+
+C lag      10 sec
+FlowControl false
+App latency 120 ms
+
+19:03:00
+C CPU      100%
+C disk     100%
+C lag      35 sec
+FlowControl true
+App latency 800 ms
+
+19:04:00
+C lag      50 sec
+FlowControl true
+targetRateLimit ↓
+App latency 2 sec
+
+c configured
+priority: 0
+hidden: true
+secondaryDelaySecs: 18000
+
+No — if C is your 5-hour delayed disaster-recovery node, those numbers strongly suggest C is currently a voting member, and that is something I would investigate/change.
+
+Your values mean:
+
+Field	Your value	Meaning
+majorityVoteCount	2	2 votes are needed for election majority
+writeMajorityCount	2	2 data-bearing voting members are needed for "majority" writes
+votingMembersCount	3	You have 3 voting members
+writableVotingMembersCount	2	2 of those voting members are data-bearing
+
+MongoDB defines writeMajorityCount as the number of data-bearing voting members required to satisfy "majority" write concern.
+
+Why this matters for your 5-hour delayed C
+
+If your topology is:
+
+A = PRIMARY
+B = normal SECONDARY
+C = 5-hour DELAYED SECONDARY
+
+and all three are voting:
+
+A   votes=1
+B   votes=1
+C   votes=1   <-- delayed
+
+then:
+
+votingMembersCount = 3
+majorityVoteCount = 2
+
+and because C is delayed but voting/data-bearing, C can become relevant to majority behavior under certain failure conditions.
+
+MongoDB specifically recommends that delayed members be hidden and non-voting. The documentation warns that if a delayed member remains voting and another non-delayed member becomes unavailable, the commit point can be held back by the delayed member, potentially causing performance issues.
+
+The configuration I would expect for C
+
+For a 5-hour delayed DR node, typically:
+
+{
+    priority: 0,
+    hidden: true,
+    votes: 0,
+    secondaryDelaySecs: 18000
+}
+
+MongoDB's documentation explicitly says delayed members should be configured with priority: 0, hidden: true, and the desired secondaryDelaySecs; for delayed members, MongoDB also recommends non-voting.
+
+Then your topology would effectively be:
+
+                 A
+              PRIMARY
+                 |
+        +--------+--------+
+        |                 |
+        v                 v
+       B                  C
+   SECONDARY        DELAYED 5 HOURS
+   votes = 1        votes = 0
+   priority > 0     priority = 0
+                    hidden = true
+
+Your counts would then be approximately:
+
+votingMembersCount          = 2
+majorityVoteCount           = 2
+writableVotingMembersCount  = 2
+writeMajorityCount          = 2
+
+That is much more appropriate for the A+B active members plus C as a delayed DR member, assuming you don't have another voting member/arbiter in the actual configuration.
+
+But don't change it blindly
+
+Before changing anything, let's verify the exact configuration. Run on the primary:
+
+rs.conf().members.map(m => ({
+    host: m.host,
+    votes: m.votes,
+    priority: m.priority,
+    hidden: m.hidden,
+    secondaryDelaySecs: m.secondaryDelaySecs,
+    arbiterOnly: m.arbiterOnly
+}))
+
+Send me that output with hostnames/IPs masked, for example:
+
+A: votes=1, priority=2, hidden=false, delay=0
+B: votes=1, priority=1, hidden=false, delay=0
+C: votes=1, priority=0, hidden=true, delay=18000
+
+That will tell us whether C is actually capable of contributing to your flow-control/application-lag problem.
+
+And importantly, do not run rs.reconfig() yet. Changing voting configuration is a topology change and should be planned carefully because replica-set reconfiguration can affect elections/availability.
+
+If you give me the rs.conf().members output, I can map exactly how your majorityVoteCount=2 / writeMajorityCount=2 interacts with the 5-hour delayed C and tell you whether C can be the source of the lag you're observing.
