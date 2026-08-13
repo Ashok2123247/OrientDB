@@ -1,0 +1,234 @@
+Yes. The cleanest way is to keep your existing inputs.mongodb plugin and add a separate inputs.exec collector that runs serverStatus and outputs only the Flow Control and Global Lock values to InfluxDB.
+
+MongoDB's serverStatus explicitly provides both flowControl and globalLock.
+
+1. First verify MongoDB returns the metrics
+
+On the MongoDB host, run:
+
+mongosh --quiet --eval '
+const s = db.adminCommand({serverStatus: 1});
+printjson({
+  flowControl: s.flowControl,
+  globalLock: s.globalLock
+});
+'
+
+You should get something similar to:
+
+flowControl: {
+  enabled: true,
+  targetRateLimit: ...,
+  timeAcquiringMicros: ...,
+  locksPerKiloOp: ...,
+  sustainerRate: ...,
+  isLagged: false,
+  isLaggedCount: ...,
+  isLaggedTimeMicros: ...
+}
+
+globalLock: {
+  totalTime: ...,
+  currentQueue: {
+    total: ...,
+    readers: ...,
+    writers: ...
+  },
+  activeClients: {
+    total: ...,
+    readers: ...,
+    writers: ...
+  }
+}
+
+Those are the exact MongoDB fields you want.
+
+2. Create a small script for Telegraf
+
+I recommend creating:
+
+/usr/local/bin/mongodb_serverstatus.sh
+
+For example:
+
+#!/bin/bash
+
+mongosh --quiet --host localhost:27017 \
+  --eval '
+const s = db.adminCommand({serverStatus: 1});
+
+const fc = s.flowControl || {};
+const gl = s.globalLock || {};
+
+print(
+  "mongodb_serverstatus " +
+  "flowControl_enabled=" + (fc.enabled ? 1 : 0) + "i," +
+  "flowControl_targetRateLimit=" + (fc.targetRateLimit || 0) + "i," +
+  "flowControl_timeAcquiringMicros=" + (fc.timeAcquiringMicros || 0) + "i," +
+  "flowControl_locksPerKiloOp=" + (fc.locksPerKiloOp || 0) + "," +
+  "flowControl_sustainerRate=" + (fc.sustainerRate || 0) + "i," +
+  "flowControl_isLagged=" + (fc.isLagged ? 1 : 0) + "i," +
+  "flowControl_isLaggedCount=" + (fc.isLaggedCount || 0) + "i," +
+  "flowControl_isLaggedTimeMicros=" + (fc.isLaggedTimeMicros || 0) + "i," +
+  "globalLock_totalTime=" + (gl.totalTime || 0) + "i," +
+  "globalLock_currentQueue_total=" + (gl.currentQueue?.total || 0) + "i," +
+  "globalLock_currentQueue_readers=" + (gl.currentQueue?.readers || 0) + "i," +
+  "globalLock_currentQueue_writers=" + (gl.currentQueue?.writers || 0) + "i," +
+  "globalLock_activeClients_total=" + (gl.activeClients?.total || 0) + "i," +
+  "globalLock_activeClients_readers=" + (gl.activeClients?.readers || 0) + "i," +
+  "globalLock_activeClients_writers=" + (gl.activeClients?.writers || 0) + "i"
+);
+'
+
+Then:
+
+chmod +x /usr/local/bin/mongodb_serverstatus.sh
+
+Run it manually:
+
+/usr/local/bin/mongodb_serverstatus.sh
+
+You should get Influx line protocol similar to:
+
+mongodb_serverstatus flowControl_enabled=1i,flowControl_targetRateLimit=1000i,flowControl_timeAcquiringMicros=12345i,flowControl_locksPerKiloOp=2.3,flowControl_sustainerRate=950i,flowControl_isLagged=0i,flowControl_isLaggedCount=5i,flowControl_isLaggedTimeMicros=500000i,globalLock_totalTime=123456789i,globalLock_currentQueue_total=2i,globalLock_currentQueue_readers=1i,globalLock_currentQueue_writers=1i,globalLock_activeClients_total=20i,globalLock_activeClients_readers=10i,globalLock_activeClients_writers=5i
+3. Add inputs.exec to Telegraf
+
+In your Telegraf configuration:
+
+[[inputs.exec]]
+  commands = ["/usr/local/bin/mongodb_serverstatus.sh"]
+
+  timeout = "10s"
+
+  data_format = "influx"
+
+That's it.
+
+Telegraf's inputs.exec plugin is designed to execute an external command periodically and parse its output as a Telegraf-supported metric format.
+
+Your existing configuration can remain:
+
+[[inputs.mongodb]]
+  servers = ["mongodb://localhost:27017"]
+
+  gather_perdb_stats = true
+
+So you'll have:
+
+inputs.mongodb
+       |
+       +---- mongodb
+       +---- mongodb_db_stats
+       |
+inputs.exec
+       |
+       +---- mongodb_serverstatus
+              |
+              +---- Flow Control
+              +---- Global Lock
+4. If MongoDB requires authentication
+
+If your MongoDB requires authentication, don't leave credentials directly in the Telegraf config if you can avoid it.
+
+For example, create a MongoDB monitoring user with appropriate monitoring permissions, then use:
+
+mongosh --quiet \
+  --host localhost:27017 \
+  --username telegraf \
+  --password 'PASSWORD' \
+  --authenticationDatabase admin \
+  --eval '...'
+
+Ideally, put the password in a protected credentials file/environment rather than directly in the script.
+
+For monitoring, you should use a minimally privileged monitoring account rather than an admin account.
+
+5. Test Telegraf before restarting
+
+Run:
+
+telegraf --test --config /etc/telegraf/telegraf.conf --input-filter exec
+
+You should see:
+
+mongodb_serverstatus,host=mongodb01 \
+flowControl_enabled=1i,\
+flowControl_targetRateLimit=...,\
+flowControl_timeAcquiringMicros=...,\
+flowControl_locksPerKiloOp=...,\
+flowControl_isLagged=...,\
+globalLock_currentQueue_total=...,\
+globalLock_currentQueue_readers=...,\
+globalLock_currentQueue_writers=...,\
+globalLock_activeClients_total=...
+
+If that works, restart:
+
+systemctl restart telegraf
+
+Then check:
+
+journalctl -u telegraf -f
+6. What I recommend monitoring in InfluxDB
+
+For Flow Control, these are the most useful:
+
+flowControl_enabled
+flowControl_targetRateLimit
+flowControl_timeAcquiringMicros
+flowControl_locksPerKiloOp
+flowControl_sustainerRate
+flowControl_isLagged
+flowControl_isLaggedCount
+flowControl_isLaggedTimeMicros
+
+The particularly important ones for troubleshooting are:
+
+flowControl_isLagged
+flowControl_timeAcquiringMicros
+flowControl_targetRateLimit
+flowControl_sustainerRate
+
+MongoDB documents isLagged as indicating whether Flow Control has engaged, while timeAcquiringMicros measures how long writes have waited to acquire Flow Control tickets.
+
+For Global Lock, use:
+
+globalLock_currentQueue_total
+globalLock_currentQueue_readers
+globalLock_currentQueue_writers
+
+globalLock_activeClients_total
+globalLock_activeClients_readers
+globalLock_activeClients_writers
+
+These are more useful than globalLock.totalTime for detecting contention. MongoDB describes currentQueue as operations waiting for a lock and activeClients as context for interpreting that queue.
+
+One important point about your "trace MongoDB data" requirement
+
+If your actual goal is to trace why MongoDB is slowing down, I would collect more than just globalLock.
+
+I'd build your Telegraf/InfluxDB dataset around:
+
+                         MongoDB
+                            |
+          +-----------------+------------------+
+          |                 |                  |
+     inputs.mongodb    serverStatus       replication
+          |                 |                  |
+          |                 |                  |
+     Operations        Flow Control       Lag
+     Connections       Global Lock        Oplog
+     DB stats          Locks              Health
+     Collection stats
+          |                 |                  |
+          +-----------------+------------------+
+                            |
+                         InfluxDB
+                            |
+                         Grafana
+
+In particular, Flow Control + replication lag + write latency + lock queue together tell a much better story than any one metric.
+
+Also, Flow Control metrics are most meaningful on the primary; MongoDB notes that many of the Flow Control values returned on a secondary are placeholders.
+
+If you tell me your MongoDB version + Telegraf version + InfluxDB 1.x/2.x, I can give you a production-ready telegraf.conf and the exact InfluxQL/Flux queries for Grafana for Flow Control, Global Lock, replication lag, connections, reads/writes, and database/collection statistics.
