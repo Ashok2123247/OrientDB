@@ -1,0 +1,112 @@
+[ High Incoming Writes ] ──► [ WiredTiger Cache (Dirty Bytes: ~14 GB) ]
+                                         │
+                         (Exceeds 20% Dirty Trigger)
+                                         ▼
+                               [ Disk I/O Throttled ]
+                                         │
+                    ┌────────────────────┴────────────────────┐
+                    ▼                                         ▼
+     [ App/Repl Threads Stalled ]                 [ OS Paging to Swap (99%) ]
+     (Evicting 25.9M pages directly)              (Disk latency skyrockets)
+
+Yes, this is a critical state. Having 13 to 14 GB of dirty bytes, 25.9 million evicted pages, and 99% swap memory usage on a node with 136 GB RAM means the secondary node is experiencing severe memory pressure and disk thrashing.
+
+Dirty Bytes Exceed Safe Thresholds:
+On a 136 GB RAM system, WiredTiger’s cache defaults to ~67.5 GB (50% RAM - 1 GB).
+
+WiredTiger's eviction_dirty_trigger is 20%.
+
+20% of 67.5 GB is ~13.5 GB.
+
+Because dirty bytes hit ~14 GB, WiredTiger has crossed its emergency limit. It has stopped relying solely on background eviction threads and is forcing application and replication threads to flush pages to disk.
+
+25.9 Million Evicted Pages:
+This metric confirms that worker and application threads are constantly kicking pages out of RAM to keep the engine from crashing. Because writing dirty pages to disk is too slow, memory fills up immediately again.
+
+99% Swap Usage (The Performance Killer):
+When Linux starts swapping out MongoDB pages to disk:
+
+Memory access times jump from nanoseconds (RAM) to milliseconds (Disk).
+
+Lock wait times (parallelBatchWriterMode, global:w) skyrocket because threads are blocked waiting on disk reads/writes from swap.
+
+This is what triggers Flow Control on the primary and degrades overall cluster throughput.
+
+
+Immediate Action Plan
+Step 1: Clamp WiredTiger Cache Size Down (To Prevent OS Swapping)
+When OS swap hits 99%, it means non-WiredTiger processes (or MongoDB in-memory allocations like aggregation buffers, connections, and index builds) are competing with the cache for system RAM.
+
+Drop the cache size slightly so the OS has breathing room and stops swapping. Run on the secondary:
+
+// Temporarily reduce WT Cache from 67GB to 50GB to free OS RAM and kill swap pressure
+db.adminCommand({
+  "setParameter": 1,
+  "wiredTigerEngineRuntimeConfig": "cache_size=50G"
+});
+
+Step 2: Clear/Turn Off Linux Swappiness
+MongoDB requires OS swappiness to be set to 0 or 1. If it's set to the default (60), Linux will prematurely dump memory to disk.
+
+Check current swappiness: cat /proc/sys/vm/swappiness
+
+Set swappiness to 1 dynamically (as root/sudo on the OS):
+
+Bash
+sysctl vm.swappiness=1
+
+Step 3: Increase Eviction Threads
+With 56 CPU cores, you have plenty of compute available. You can scale WiredTiger background eviction threads so dedicated workers handle page flushes rather than blocking query threads:
+
+JavaScript
+db.adminCommand({
+  "setParameter": 1,
+  "wiredTigerEngineRuntimeConfig": "eviction=(threads_min=8,threads_max=16)"
+});
+Step 4: Verify Disk IOPS Bottleneck
+Check storage utilization on the secondary host using OS tools:
+
+Bash
+iostat -xz 1
+
+Metric	Status	Diagnosis	Next Step
+Dirty Bytes (14 GB)	CRITICAL	Over 20% dirty trigger limit	Increase eviction threads; check disk IOPS.
+MetricStatusDiagnosisNext StepDirty Bytes (14 GB)CRITICALOver 20% dirty trigger limitIncrease eviction threads; check disk IOPS.Swap Memory (99%)CRITICALOS thrashing, destroying performanceReduce WT Cache size to 50G; set swappiness=1.
+Evicted Threads / Pages	HIGH	App threads actively flushing pages	Lower incoming write batch sizes on primary
+CPU (56 Cores)	GOOD	Headroom available for background work	Allocate more eviction threads in runtime config.
+
+
+How to Resolve the Bottleneck
+Upgrade Secondary Disk Performance: Ensure the secondary node’s storage provisioned IOPS and write bandwidth match or exceed the primary’s disk specs.
+
+Tune WiredTiger Eviction Workers (If CPU Available): Increase the number of background eviction threads in mongod.conf or dynamically via setParameter:
+
+JavaScript
+db.adminCommand({ setParameter: 1, wiredTigerEngineRuntimeConfig: "eviction=(threads_min=4,threads_max=8)" })
+Tune Oplog Application Batch Sizes: If you are running massive bulk writes, lower the maximum batch size applied by replication workers on secondaries:
+
+JavaScript
+db.adminCommand({ setParameter: 1, replBatchLimitBytes: 16777216 }) // 16MB limit
+Temporary Mitigation for Primary Throughput: If Flow Control is stalling critical application writes, you can adjust target lag thresholds or temporarily disable Flow Control (though this will increase secondary replication lag):
+
+JavaScript
+db.adminCommand({ setParameter: 1, enableFlowControl: false })
+(Note: Disabling flow control allows primary writes to proceed at full speed, but the secondary will fall further behind until storage I/O is resolved).
+
+Is This Related to Flow Control Increasing?
+Yes, absolutely. The two metrics are directly linked in a primary-secondary feedback loop:
+
+WiredTiger Eviction Bottleneck: When dirty bytes cross threshold limits (typically around 20% of WiredTiger cache), background eviction threads stop being able to write pages to disk fast enough. WiredTiger forces application/replication worker threads to assist with page eviction, dramatically slowing down write application.
+
+Oplog Application Lags: Because the secondary node’s WiredTiger cache is choked with dirty data, it cannot apply incoming oplog entries from the primary in a timely manner.
+
+Flow Control Kicks In: To prevent the secondary from falling so far behind that it drops out of the oplog window, MongoDB's Flow Control algorithm throttles write throughput on the primary. As secondary replication lag builds, Flow Control steadily increases its pressure, putting backpressure on client writes.
+
+What Causes Dirty Bytes to Rise to 13–14 GB?
+I/O Subsystem Exhaustion: The underlying disk volume (EBS, SAN, local NVMe) has hit its IOPS or throughput limit. The disk simply cannot write pages fast enough to clear the dirty page queue.
+
+Aggressive Parallel Replication: The secondary is receiving bulk write batches via parallelBatchWriterMode and pushing them into WiredTiger faster than the disk can flush checkpoints.
+
+Under-provisioned Secondary: The secondary node has slower hardware, fewer CPU cores, or lower IOPS allocation compared to the primary node.
+
+Checkpoints Stalling: WiredTiger takes a checkpoint every 60 seconds (or 2 GB of log data). If flushing dirty pages during a checkpoint takes too long, dirty data rapidly accumulates.
