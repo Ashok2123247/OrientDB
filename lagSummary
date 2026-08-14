@@ -1,3 +1,21 @@
+## Primary Causes of Slowness
+
+* **Disk Write Bottleneck:** Heavy time-series writes arrive faster than storage can save them, causing 5-10 GB of dirty pages to pile up in memory.
+* **WiredTiger Eviction Stalls:** WiredTiger slows down application write operations to prevent cache overflow, directly causing application lag.
+* **Aggressive OS Swappiness:** High Linux swappiness forces memory onto swap space (90-99%), severe slowing down overall system throughput.
+* **Time-Series Bucketing Overhead:** Frequent creation and updating of time-series bucket collections constantly dirties large cache blocks.
+
+---
+
+## Diagnostic & Remediation Commands
+
+* **Check dirty cache usage:** `db.serverStatus().wiredTiger.cache["tracked dirty bytes in the cache"]`
+* **Reduce OS swappiness to 1 immediately:** `sudo sysctl vm.swappiness=1`
+* **Check disk I/O saturation and queue length:** `iostat -xz 1 10`
+* **Identify active long-running write operations:** `db.currentOp({"active": true, "secs_running": {"$gt": 2}})`
+* **Check overall memory allocated to WiredTiger:** `db.serverStatus().wiredTiger.cache["bytes currently in the cache"]`
+
+
 [ High Incoming Writes ] ──► [ WiredTiger Cache (Dirty Bytes: ~14 GB) ]
                                          │
                          (Exceeds 20% Dirty Trigger)
