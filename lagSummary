@@ -16,6 +16,48 @@
 * **Check overall memory allocated to WiredTiger:** `db.serverStatus().wiredTiger.cache["bytes currently in the cache"]`
 
 
+
+Increase eviction threads: Allow WiredTiger to flush dirty pages faster to disk using background threads.
+
+db.adminCommand({ setParameter: 1, wiredTigerEngineRuntimeConfig: "eviction=(threads_max=12,threads_min=4)" })
+
+Lower dirty cache triggers: Force WiredTiger to start eviction earlier so dirty pages don't stack up to 10 GB.
+
+db.adminCommand({ setParameter: 1, wiredTigerEngineRuntimeConfig: "eviction_dirty_target=5,eviction_dirty_trigger=10" })
+
+Reduce WiredTiger max cache size slightly: Free up host RAM for the OS filesystem cache to assist flush operations.
+
+db.adminCommand({ setParameter: 1, wiredTigerEngineRuntimeConfig: "cache_size=50G" })
+
+Optimize time-series bucket settings: Align granularity (seconds, minutes, or hours) to avoid modifying too many open buckets at once.
+
+db.runCommand({ collMod: "your_timeseries_coll", timeseries: { granularity: "minutes" } })
+
+How to Fix Disk I/O Bottlenecks (Even on High-Speed Disks)
+Separate Journal and Data volumes: Move journal write traffic to a dedicated high-speed disk to eliminate disk contention.
+
+Example layout: Mount /var/lib/mongo/journal on NVMe-1 and /var/lib/mongo/data on NVMe-2.
+
+Increase storage IOPS provisioning (Cloud/SAN): Cloud disks (e.g., AWS GP3/io2 or Azure Ultra) often hit IOPS or throughput caps despite low latency.
+
+aws ec2 modify-volume --volume-id vol-xxx --iops 16000 --throughput 500
+
+Disable Read-Ahead on Linux disk: High-speed SSDs perform poorly when reading extra unrequested blocks during heavy random writes.
+
+sudo blockdev --setra 0 /dev/nvme0n1
+
+Switch disk scheduler to None or Kyber: Bypass traditional OS queueing mechanisms for modern NVMe drives.
+
+echo none | sudo tee /sys/block/nvme0n1/queue/scheduler
+
+Tune Linux dirty page ratio: Prevent the OS kernel from accumulating large write bursts in filesystem cache.
+
+sudo sysctl vm.dirty_background_ratio=5 && sudo sysctl vm.dirty_ratio=10
+
+
+
+
+
 [ High Incoming Writes ] ──► [ WiredTiger Cache (Dirty Bytes: ~14 GB) ]
                                          │
                          (Exceeds 20% Dirty Trigger)
