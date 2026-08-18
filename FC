@@ -1,0 +1,72 @@
+**Flow Control** in MongoDB (introduced in v4.2) is a built-in rate-limiting mechanism designed to prevent secondary nodes from falling too far behind the primary node during data replication.
+
+---
+
+### What is the Use of Flow Control?
+
+Its main purpose is to **manage replication lag** across a replica set.
+
+When write throughput on the primary node is faster than secondary nodes can apply, replication lag grows. Flow control throttles write throughput on the primary node by dynamically restricting write "tickets," ensuring that majority-committed replication lag stays close to a defined target (default: 10 seconds).
+
+---
+
+### What Triggers Flow Control?
+
+Flow control kicks in automatically when the **majority-committed replication lag exceeds the target lag threshold** (`flowControlTargetLagSeconds`, default 10 seconds).
+
+Common root causes for this trigger include:
+
+* **Heavy Write Workloads:** Bulk updates, massive inserts, or deletes on the primary that secondaries struggle to apply quickly.
+* **Resource Bottlenecks on Secondaries:** Secondary nodes having slower CPU, lower disk I/O, or insufficient RAM compared to the primary node.
+* **Network Latency/Packet Loss:** Network degradation between primary and secondary nodes delaying oplog delivery.
+* **Unindexed Queries on Secondaries:** Reads on secondaries competing with replication worker threads for disk/CPU resources.
+* **Long-Running Operations:** Locks or heavy operations holding up oplog application on secondary nodes.
+
+---
+
+### How to Prevent Flow Control from Triggering (Avoid Growth)
+
+To prevent replication lag from growing and activating flow control, target the underlying replication bottleneck:
+
+1. **Provision Homogeneous Hardware:** Ensure secondary nodes have identical CPU, RAM, and disk I/O capabilities as the primary node.
+2. **Optimize Write Operations:**
+* Batch bulk writes into smaller chunks rather than giant single operations.
+* Avoid unindexed updates or deletes that require collection scans on secondaries.
+
+
+3. **Optimize Disk I/O:** Ensure secondary storage (e.g., IOPS on AWS EBS volumes) is sufficient to handle the write volume.
+4. **Tune Flow Control Parameters (if needed):**
+* Increase target lag threshold:
+```javascript
+db.adminCommand({ setParameter: 1, flowControlTargetLagSeconds: 30 })
+
+```
+
+
+* Disable flow control temporarily (not recommended for production unless necessary, e.g., Primary-Secondary-Arbiter failover issues):
+```javascript
+db.adminCommand({ setParameter: 1, enableFlowControl: false })
+
+```
+
+
+
+
+
+---
+
+### Is Flow Control Related to Swap Memory Growth?
+
+**Yes, indirectly.** While Flow Control itself does not directly allocate system swap memory, **swap memory growth is often both a cause and a symptom of the conditions that trigger Flow Control**:
+
+1. **WiredTiger Cache Pressure (Symptom):** When replication lag increases, the primary node must hold majority-uncommitted data in its WiredTiger cache longer. As cache pressure rises, the OS may push inactive memory pages to swap space, causing swap growth on the primary node.
+2. **Secondary Node Swapping (Cause):** If a secondary node runs out of RAM, the Linux kernel begins swapping memory pages to disk. Disk I/O from swapping drastically slows down oplog execution on the secondary, causing it to lag. This lag immediately triggers Flow Control on the primary.
+
+*Check whether Flow Control is currently throttling writes using:*
+
+```javascript
+db.serverStatus().flowControl
+
+```
+
+*(Look at `isLagged: true` and `timeAcquiringMicros`)*
