@@ -1,0 +1,238 @@
+Yes. Here is one practical sample that fits your requirement: **MongoDB stores the credential, while the shell script retrieves it without keeping the target password in the script.**
+
+I recommend using **MongoDB Client-Side Field Level Encryption (CSFLE)** for production. But to keep the first implementation simple, below is an **application-level AES-256 encryption** example. The encryption key must be protected separately.
+
+### Option 1 — Simple implementation: MongoDB + AES-256 encrypted password
+
+#### 1. Create the MongoDB database and collection
+
+```javascript
+use automation_security
+
+db.credentials.insertOne({
+    _id: "prod_sql",
+    username: "sql_backup_user",
+    password: "ENCRYPTED_PASSWORD_HERE",
+    server: "sqlprod01",
+    enabled: true,
+    createdAt: new Date()
+})
+```
+
+Your collection will look like:
+
+```text
+automation_security.credentials
+```
+
+```json
+{
+  "_id": "prod_sql",
+  "username": "sql_backup_user",
+  "password": "U2FsdGVkX1+......",
+  "server": "sqlprod01",
+  "enabled": true
+}
+```
+
+The important part is that the password is **not plaintext**.
+
+---
+
+#### 2. Create a dedicated MongoDB user
+
+Do not use `root` from the shell script.
+
+```javascript
+use automation_security
+
+db.createUser({
+    user: "automation_reader",
+    pwd: "STRONG_MONGO_PASSWORD",
+    roles: [
+        {
+            role: "read",
+            db: "automation_security"
+        }
+    ]
+})
+```
+
+This account can only read the credentials database.
+
+---
+
+#### 3. Encrypt the target password
+
+For example, suppose the actual password is:
+
+```text
+MyProductionPassword@123
+```
+
+You can encrypt it using OpenSSL:
+
+```bash
+echo -n 'MyProductionPassword@123' | \
+openssl enc -aes-256-cbc -a -pbkdf2 \
+-pass file:/secure/keys/credential.key
+```
+
+Output will look similar to:
+
+```text
+U2FsdGVkX1+7K8......==
+```
+
+Store **that encrypted value** in MongoDB:
+
+```javascript
+db.credentials.updateOne(
+    { _id: "prod_sql" },
+    {
+        $set: {
+            password: "U2FsdGVkX1+7K8......=="
+        }
+    }
+)
+```
+
+---
+
+#### 4. Protect the encryption key
+
+Create:
+
+```bash
+mkdir -p /secure/keys
+chmod 700 /secure/keys
+```
+
+Create the key:
+
+```bash
+openssl rand -base64 32 > /secure/keys/credential.key
+```
+
+Then:
+
+```bash
+chmod 600 /secure/keys/credential.key
+```
+
+Only the automation account should be able to read this file.
+
+Your structure becomes:
+
+```text
+/secure/keys/
+└── credential.key       # AES encryption key
+
+/scripts/
+└── backup.sh            # No target password
+```
+
+**Do not put `credential.key` inside your Git repository or inside `backup.sh`.**
+
+---
+
+#### 5. Shell script retrieves the credential
+
+For example:
+
+```bash
+#!/bin/bash
+
+MONGO_URI="mongodb://automation_reader:<MONGO_PASSWORD>@mongo01:27017/automation_security?authSource=automation_security"
+
+KEY_FILE="/secure/keys/credential.key"
+
+CREDENTIAL=$(mongosh "$MONGO_URI" --quiet --eval '
+    const c = db.credentials.findOne(
+        {_id: "prod_sql", enabled: true},
+        {_id: 0, username: 1, password: 1}
+    );
+    print(JSON.stringify(c));
+')
+
+USERNAME=$(echo "$CREDENTIAL" | jq -r '.username')
+ENCRYPTED_PASSWORD=$(echo "$CREDENTIAL" | jq -r '.password')
+
+PASSWORD=$(echo "$ENCRYPTED_PASSWORD" | \
+    openssl enc -aes-256-cbc -d -a -pbkdf2 \
+    -pass file:"$KEY_FILE")
+
+echo "Credential retrieved for user: $USERNAME"
+
+# Use the credentials here
+# your_command --user "$USERNAME" --password "$PASSWORD"
+
+unset PASSWORD
+unset ENCRYPTED_PASSWORD
+unset CREDENTIAL
+```
+
+The important point is that your script contains:
+
+```text
+Username       → retrieved from MongoDB
+Target password → retrieved encrypted → decrypted in memory
+Encryption key → outside the script
+```
+
+### But there is one remaining weakness
+
+Notice this:
+
+```bash
+MONGO_URI="mongodb://automation_reader:<MONGO_PASSWORD>@..."
+```
+
+You have now protected the **target password**, but the **MongoDB password is still in the script**.
+
+Therefore, for a proper production implementation, I would change the design to:
+
+```text
+                MongoDB
+                   │
+                   │ TLS
+                   ▼
+        automation_security
+             credentials
+                   │
+          encrypted password
+                   │
+                   ▼
+             Shell script
+                   │
+          decrypt in memory
+                   │
+                   ▼
+             Target server
+```
+
+And authenticate the shell script to MongoDB using something that does **not require a hardcoded MongoDB password**, such as an external secret manager, certificate-based authentication, or another machine/service identity mechanism available in your environment.
+
+### Option 2 — Production design
+
+For your DBA automation environment, I would ultimately use:
+
+```text
+Shell Script
+     │
+     │ Machine/Service Identity
+     ▼
+Secret Manager / Vault
+     │
+     │ MongoDB credentials
+     ▼
+MongoDB
+     │
+     │ Read-only access
+     ▼
+credentials collection
+```
+
+This removes the biggest problem with Option 1: **there is no permanent password embedded in the shell script.**
+
+If you tell me whether your automation server is **CentOS/RHEL and whether MongoDB is 5.x, 6.x, or 7.x**, I can give you the exact production-ready implementation for **MongoDB + CentOS shell script**, including TLS, MongoDB user creation, encrypted collection, and the complete working script.
