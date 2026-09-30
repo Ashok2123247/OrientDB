@@ -25,3 +25,37 @@ SELECT @html =
 
 -- Text output + huge width required, or the variable prints truncated
 SELECT @html;
+
+
+
+
+SET NOCOUNT ON;
+:XML ON
+
+DECLARE @html NVARCHAR(MAX);
+
+SELECT @html =
+    N'<html><head><meta charset="utf-8"><title>SQL Agent Job Commands</title>'
+    + N'<style>body{font-family:Segoe UI,sans-serif;margin:24px}'
+    + N'h3{border-bottom:1px solid #ccc;padding-bottom:4px}'
+    + N'pre{background:#f4f4f4;padding:12px;border:1px solid #ddd;'
+    + N'overflow-x:auto;white-space:pre;font-family:Consolas,monospace}</style>'
+    + N'</head><body><h1>SQL Agent Job Commands</h1>'
+    + (
+        SELECT
+            N'<h3>' + j.name + N' &rarr; step ' + CAST(s.step_id AS NVARCHAR(10))
+                + N' (' + s.step_name + N')</h3>'
+            + N'<p><b>Subsystem:</b> ' + s.subsystem
+                + N' &nbsp; <b>Database:</b> ' + ISNULL(s.database_name, N'(none)') + N'</p>'
+            + N'<pre>' + REPLACE(REPLACE(REPLACE(
+                    s.command, N'&', N'&amp;'), N'<', N'&lt;'), N'>', N'&gt;')
+            + N'</pre>'
+        FROM msdb.dbo.sysjobs AS j
+        INNER JOIN msdb.dbo.sysjobsteps AS s ON s.job_id = j.job_id
+        ORDER BY j.name, s.step_id
+        FOR XML PATH(''), TYPE
+        ).value('.', 'NVARCHAR(MAX)')
+    + N'</body></html>';
+
+PRINT @html;
+
