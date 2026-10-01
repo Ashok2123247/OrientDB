@@ -1,61 +1,176 @@
-DECLARE @html NVARCHAR(MAX);
+# ============================================
+# SQL Agent Job Command Export
+# Does NOT use Invoke-Sqlcmd or sqlcmd
+# ============================================
 
-SELECT @html =
-    N'<html><head><meta charset="utf-8"><title>SQL Agent Job Commands</title>'
-    + N'<style>body{font-family:Segoe UI,sans-serif;margin:24px}'
-    + N'h3{border-bottom:1px solid #ccc;padding-bottom:4px}'
-    + N'pre{background:#f4f4f4;padding:12px;border:1px solid #ddd;'
-    + N'overflow-x:auto;white-space:pre;font-family:Consolas,monospace}</style>'
-    + N'</head><body><h1>SQL Agent Job Commands</h1>'
-    + (
-        SELECT
-            N'<h3>' + j.name + N' &rarr; step ' + CAST(s.step_id AS NVARCHAR(10))
-                + N' (' + s.step_name + N')</h3>'
-            + N'<p><b>Subsystem:</b> ' + s.subsystem
-                + N' &nbsp; <b>Database:</b> ' + ISNULL(s.database_name, N'(none)') + N'</p>'
-            + N'<pre>' + REPLACE(REPLACE(REPLACE(
-                    s.command, N'&', N'&amp;'), N'<', N'&lt;'), N'>', N'&gt;')
-            + N'</pre>'
-        FROM msdb.dbo.sysjobs AS j
-        INNER JOIN msdb.dbo.sysjobsteps AS s ON s.job_id = j.job_id
-        ORDER BY j.name, s.step_id
-        FOR XML PATH(''), TYPE
-        ).value('.', 'NVARCHAR(MAX)')
-    + N'</body></html>';
+$SqlServer = "YOUR-SQL-SERVER"
+$Database  = "msdb"
 
--- Text output + huge width required, or the variable prints truncated
-SELECT @html;
+$SqlFile   = "C:\Scripts\Get-SQLAgentJobs.sql"
+$OutputFile = "C:\Scripts\SQLAgentJobs_Output.txt"
+
+# ------------------------------------------------
+# Read T-SQL script
+# ------------------------------------------------
+
+$SqlQuery = Get-Content -Path $SqlFile -Raw
+
+# ------------------------------------------------
+# SQL Connection
+# ------------------------------------------------
+
+$ConnectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;TrustServerCertificate=True;"
+
+$Connection = New-Object System.Data.SqlClient.SqlConnection
+$Connection.ConnectionString = $ConnectionString
+
+$Command = $Connection.CreateCommand()
+$Command.CommandText = $SqlQuery
+$Command.CommandTimeout = 0
+
+# ------------------------------------------------
+# Execute query
+# ------------------------------------------------
+
+try {
+
+    $Connection.Open()
+
+    $Reader = $Command.ExecuteReader()
+
+    $Output = New-Object System.Text.StringBuilder
+
+    # Header
+    [void]$Output.AppendLine("============================================================")
+    [void]$Output.AppendLine(" SQL SERVER AGENT JOB COMMAND REPORT")
+    [void]$Output.AppendLine(" Server : $SqlServer")
+    [void]$Output.AppendLine(" Date   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$Output.AppendLine("============================================================")
+    [void]$Output.AppendLine("")
+
+    while ($Reader.Read()) {
+
+        $JobName  = $Reader["JobName"].ToString()
+        $StepName = $Reader["StepName"].ToString()
+        $CommandText = $Reader["Command"].ToString()
+
+        [void]$Output.AppendLine("------------------------------------------------------------")
+        [void]$Output.AppendLine("JOB NAME : $JobName")
+        [void]$Output.AppendLine("STEP     : $StepName")
+        [void]$Output.AppendLine("------------------------------------------------------------")
+        [void]$Output.AppendLine("")
+        [void]$Output.AppendLine("COMMAND:")
+        [void]$Output.AppendLine("")
+
+        # Preserve original SQL formatting
+        [void]$Output.AppendLine($CommandText.Trim())
+
+        [void]$Output.AppendLine("")
+        [void]$Output.AppendLine("")
+    }
+
+    $Reader.Close()
+
+    # Write output
+    $Output.ToString() | Set-Content -Path $OutputFile -Encoding UTF8
+
+    Write-Host ""
+    Write-Host "Report generated successfully:" -ForegroundColor Green
+    Write-Host $OutputFile -ForegroundColor Yellow
+    Write-Host ""
+
+}
+catch {
+
+    Write-Host ""
+    Write-Host "ERROR:" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+}
+finally {
+
+    if ($Connection.State -eq "Open") {
+        $Connection.Close()
+    }
+
+    $Connection.Dispose()
+}
 
 
 
 
-SET NOCOUNT ON;
-:XML ON
 
-DECLARE @html NVARCHAR(MAX);
 
-SELECT @html =
-    N'<html><head><meta charset="utf-8"><title>SQL Agent Job Commands</title>'
-    + N'<style>body{font-family:Segoe UI,sans-serif;margin:24px}'
-    + N'h3{border-bottom:1px solid #ccc;padding-bottom:4px}'
-    + N'pre{background:#f4f4f4;padding:12px;border:1px solid #ddd;'
-    + N'overflow-x:auto;white-space:pre;font-family:Consolas,monospace}</style>'
-    + N'</head><body><h1>SQL Agent Job Commands</h1>'
-    + (
-        SELECT
-            N'<h3>' + j.name + N' &rarr; step ' + CAST(s.step_id AS NVARCHAR(10))
-                + N' (' + s.step_name + N')</h3>'
-            + N'<p><b>Subsystem:</b> ' + s.subsystem
-                + N' &nbsp; <b>Database:</b> ' + ISNULL(s.database_name, N'(none)') + N'</p>'
-            + N'<pre>' + REPLACE(REPLACE(REPLACE(
-                    s.command, N'&', N'&amp;'), N'<', N'&lt;'), N'>', N'&gt;')
-            + N'</pre>'
-        FROM msdb.dbo.sysjobs AS j
-        INNER JOIN msdb.dbo.sysjobsteps AS s ON s.job_id = j.job_id
-        ORDER BY j.name, s.step_id
-        FOR XML PATH(''), TYPE
-        ).value('.', 'NVARCHAR(MAX)')
-    + N'</body></html>';
 
-PRINT @html;
 
+
+
+$SqlServer = "YOUR-SQL-SERVER"
+$OutputFile = "C:\Scripts\SQLAgentJobs_Output.txt"
+
+$SqlQuery = @"
+SELECT
+    j.name AS JobName,
+    js.step_name AS StepName,
+    js.command AS Command
+FROM msdb.dbo.sysjobs AS j
+INNER JOIN msdb.dbo.sysjobsteps AS js
+    ON j.job_id = js.job_id
+WHERE j.enabled = 1
+ORDER BY
+    j.name,
+    js.step_id;
+"@
+
+$ConnectionString = "Server=$SqlServer;Database=msdb;Integrated Security=True;TrustServerCertificate=True;"
+
+$Connection = New-Object System.Data.SqlClient.SqlConnection
+$Connection.ConnectionString = $ConnectionString
+
+$Command = $Connection.CreateCommand()
+$Command.CommandText = $SqlQuery
+$Command.CommandTimeout = 0
+
+try {
+
+    $Connection.Open()
+
+    $Reader = $Command.ExecuteReader()
+
+    $Output = New-Object System.Text.StringBuilder
+
+    [void]$Output.AppendLine("============================================================")
+    [void]$Output.AppendLine(" SQL SERVER AGENT JOB COMMAND REPORT")
+    [void]$Output.AppendLine(" Server : $SqlServer")
+    [void]$Output.AppendLine(" Date   : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    [void]$Output.AppendLine("============================================================")
+    [void]$Output.AppendLine("")
+
+    while ($Reader.Read()) {
+
+        [void]$Output.AppendLine("------------------------------------------------------------")
+        [void]$Output.AppendLine("JOB NAME : " + $Reader["JobName"])
+        [void]$Output.AppendLine("STEP     : " + $Reader["StepName"])
+        [void]$Output.AppendLine("------------------------------------------------------------")
+        [void]$Output.AppendLine("")
+        [void]$Output.AppendLine("COMMAND:")
+        [void]$Output.AppendLine("")
+        [void]$Output.AppendLine($Reader["Command"].ToString().Trim())
+        [void]$Output.AppendLine("")
+        [void]$Output.AppendLine("")
+    }
+
+    $Reader.Close()
+
+    $Output.ToString() | Set-Content $OutputFile -Encoding UTF8
+
+    Write-Host "Output created: $OutputFile" -ForegroundColor Green
+
+}
+finally {
+
+    if ($Connection.State -eq "Open") {
+        $Connection.Close()
+    }
+
+    $Connection.Dispose()
+}
