@@ -1,0 +1,231 @@
+# ============================================================
+# SQL Agent Job Command Export - Multiple Servers
+# Does NOT use Invoke-Sqlcmd or sqlcmd
+# ============================================================
+
+$ServerList = "C:\Scripts\Servers.txt"
+$SqlFile    = "C:\Scripts\Get-SQLAgentJobs.sql"
+$OutputFile = "C:\Scripts\SQLAgentJobs_AllServers.txt"
+
+# ============================================================
+# Validate input files
+# ============================================================
+
+if (-not (Test-Path $ServerList)) {
+    Write-Host "Server list not found: $ServerList" -ForegroundColor Red
+    exit
+}
+
+if (-not (Test-Path $SqlFile)) {
+    Write-Host "SQL file not found: $SqlFile" -ForegroundColor Red
+    exit
+}
+
+$SqlQuery = Get-Content -Path $SqlFile -Raw
+
+if ([string]::IsNullOrWhiteSpace($SqlQuery)) {
+    Write-Host "SQL file is empty: $SqlFile" -ForegroundColor Red
+    exit
+}
+
+# ============================================================
+# Read server list
+# ============================================================
+
+$Servers = Get-Content $ServerList |
+    Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and
+        -not $_.Trim().StartsWith("#")
+    } |
+    ForEach-Object {
+        $_.Trim()
+    }
+
+# ============================================================
+# Create output object
+# ============================================================
+
+$Output = New-Object System.Text.StringBuilder
+
+[void]$Output.AppendLine("============================================================")
+[void]$Output.AppendLine("        SQL SERVER AGENT JOB COMMAND REPORT")
+[void]$Output.AppendLine("============================================================")
+[void]$Output.AppendLine("Generated : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+[void]$Output.AppendLine("Servers   : $($Servers.Count)")
+[void]$Output.AppendLine("============================================================")
+[void]$Output.AppendLine("")
+
+# ============================================================
+# Process each server
+# ============================================================
+
+foreach ($SqlServer in $Servers) {
+
+    Write-Host "Processing server: $SqlServer" -ForegroundColor Cyan
+
+    [void]$Output.AppendLine("")
+    [void]$Output.AppendLine("################################################################")
+    [void]$Output.AppendLine("SERVER : $SqlServer")
+    [void]$Output.AppendLine("################################################################")
+    [void]$Output.AppendLine("")
+
+    $Connection = $null
+    $Command    = $null
+    $Reader     = $null
+
+    try {
+
+        # --------------------------------------------------------
+        # Connection
+        # --------------------------------------------------------
+
+        $ConnectionString = "Server=$SqlServer;Database=msdb;Integrated Security=True;TrustServerCertificate=True;"
+
+        $Connection = New-Object System.Data.SqlClient.SqlConnection
+        $Connection.ConnectionString = $ConnectionString
+
+        $Connection.Open()
+
+        Write-Host "  Connected successfully" -ForegroundColor Green
+
+        # --------------------------------------------------------
+        # SQL Command
+        # --------------------------------------------------------
+
+        $Command = $Connection.CreateCommand()
+        $Command.CommandText = $SqlQuery
+        $Command.CommandTimeout = 0
+
+        # --------------------------------------------------------
+        # Execute
+        # --------------------------------------------------------
+
+        $Reader = $Command.ExecuteReader()
+
+        $RowCount = 0
+
+        while ($Reader.Read()) {
+
+            $RowCount++
+
+            # ----------------------------------------------------
+            # Safely retrieve Job Name
+            # ----------------------------------------------------
+
+            if ($Reader["JobName"] -eq [DBNull]::Value) {
+                $JobName = ""
+            }
+            else {
+                $JobName = [string]$Reader["JobName"]
+            }
+
+            # ----------------------------------------------------
+            # Safely retrieve Step Name
+            # ----------------------------------------------------
+
+            if ($Reader["StepName"] -eq [DBNull]::Value) {
+                $StepName = ""
+            }
+            else {
+                $StepName = [string]$Reader["StepName"]
+            }
+
+            # ----------------------------------------------------
+            # Safely retrieve Command
+            # ----------------------------------------------------
+
+            if ($Reader["Command"] -eq [DBNull]::Value) {
+                $CommandText = ""
+            }
+            else {
+                $CommandText = [string]$Reader["Command"]
+            }
+
+            # ----------------------------------------------------
+            # Format output
+            # ----------------------------------------------------
+
+            [void]$Output.AppendLine("------------------------------------------------------------")
+            [void]$Output.AppendLine("JOB NAME : $JobName")
+            [void]$Output.AppendLine("STEP     : $StepName")
+            [void]$Output.AppendLine("------------------------------------------------------------")
+            [void]$Output.AppendLine("")
+            [void]$Output.AppendLine("COMMAND:")
+            [void]$Output.AppendLine("")
+
+            if ([string]::IsNullOrWhiteSpace($CommandText)) {
+                [void]$Output.AppendLine("[No command found]")
+            }
+            else {
+                # Preserve original multi-line SQL formatting
+                [void]$Output.AppendLine($CommandText.Trim())
+            }
+
+            [void]$Output.AppendLine("")
+            [void]$Output.AppendLine("")
+        }
+
+        # --------------------------------------------------------
+        # Close reader
+        # --------------------------------------------------------
+
+        $Reader.Close()
+        $Reader = $null
+
+        [void]$Output.AppendLine("Total Job Steps : $RowCount")
+        [void]$Output.AppendLine("")
+
+        Write-Host "  Job steps found: $RowCount" -ForegroundColor Green
+    }
+    catch {
+
+        # --------------------------------------------------------
+        # Server-specific error
+        # --------------------------------------------------------
+
+        $ErrorMessage = $_.Exception.Message
+
+        Write-Host "  ERROR: $ErrorMessage" -ForegroundColor Red
+
+        [void]$Output.AppendLine("STATUS : FAILED")
+        [void]$Output.AppendLine("ERROR  : $ErrorMessage")
+        [void]$Output.AppendLine("")
+    }
+    finally {
+
+        if ($Reader -ne $null) {
+            try {
+                if (-not $Reader.IsClosed) {
+                    $Reader.Close()
+                }
+            }
+            catch {
+            }
+        }
+
+        if ($Connection -ne $null) {
+            try {
+                if ($Connection.State -ne [System.Data.ConnectionState]::Closed) {
+                    $Connection.Close()
+                }
+            }
+            catch {
+            }
+
+            $Connection.Dispose()
+        }
+    }
+}
+
+# ============================================================
+# Write final output
+# ============================================================
+
+$Output.ToString() |
+    Set-Content -Path $OutputFile -Encoding UTF8
+
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "Completed" -ForegroundColor Green
+Write-Host "Output file: $OutputFile" -ForegroundColor Yellow
+Write-Host "============================================================" -ForegroundColor Green
