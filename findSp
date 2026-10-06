@@ -1,0 +1,29 @@
+DECLARE @ProcedureName SYSNAME = 'YourProcedureName';
+
+CREATE TABLE #Results
+(
+    DatabaseName SYSNAME,
+    SchemaName SYSNAME,
+    ProcedureName SYSNAME
+);
+
+EXEC sp_MSforeachdb
+'
+IF DB_ID(''?'') > 4
+AND DATABASEPROPERTYEX(''?'', ''Status'') = ''ONLINE''
+BEGIN
+    INSERT INTO #Results
+    SELECT
+        ''?'',
+        SCHEMA_NAME(schema_id),
+        name
+    FROM [?].sys.procedures
+    WHERE name = ''' + @ProcedureName + '''
+END
+';
+
+SELECT *
+FROM #Results
+ORDER BY DatabaseName, SchemaName;
+
+DROP TABLE #Results;
