@@ -3,25 +3,43 @@ DECLARE @SQL NVARCHAR(MAX) = N'';
 SELECT @SQL = @SQL + N'
 USE ' + QUOTENAME(name) + N';
 
-SELECT
-    @@SERVERNAME AS ServerName,
-    DB_NAME() AS DatabaseName,
-    CAST(actual_state_desc AS VARCHAR(30)) AS Actual_State,
-    CAST(current_storage_size_mb AS DECIMAL(18,2)) AS QueryStoreCurrentSize_MB,
-    CAST(max_storage_size_mb AS DECIMAL(18,2)) AS QueryStoreMaxSize_MB,
-    CAST(interval_length_minutes AS INT) AS Interval_Len_Min,
-    CAST(stale_query_threshold_days AS INT) AS Threshold_Days,
-    DATEADD(
-        DAY,
-        -stale_query_threshold_days,
-        GETDATE()
-    ) AS EstimatedStartDate
-FROM sys.database_query_store_options;
+IF EXISTS
+(
+    SELECT 1
+    FROM sys.database_query_store_options
+    WHERE actual_state_desc <> ''OFF''
+)
+BEGIN
+    SELECT
+        @@SERVERNAME AS ServerName,
+        DB_NAME() AS DatabaseName,
+
+        CAST(qso.current_storage_size_mb AS DECIMAL(18,2))
+            AS QueryStoreCurrentSize_MB,
+
+        CAST(qso.max_storage_size_mb AS DECIMAL(18,2))
+            AS QueryStoreMaxSize_MB,
+
+        qso.actual_state_desc AS Actual_State,
+
+        qso.interval_length_minutes AS Interval_Len_Min,
+
+        qso.stale_query_threshold_days AS Threshold_Days,
+
+        qs.EstimatedStartDate
+
+    FROM sys.database_query_store_options qso
+
+    CROSS JOIN
+    (
+        SELECT MIN(initial_compile_start_time) AS EstimatedStartDate
+        FROM sys.query_store_query
+    ) qs;
+END;
 '
 FROM sys.databases
 WHERE state_desc = 'ONLINE'
-  AND database_id > 4
-ORDER BY database_id;
+  AND database_id > 4;
 
 EXEC sys.sp_executesql @SQL;
 
