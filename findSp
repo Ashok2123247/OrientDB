@@ -2,13 +2,14 @@ DECLARE @ProcedureName SYSNAME = 'YourProcedureName';
 
 CREATE TABLE #Results
 (
-    DatabaseName SYSNAME,
-    SchemaName SYSNAME,
+    DatabaseName   SYSNAME,
+    SchemaName     SYSNAME,
     ProcedureName SYSNAME
 );
 
-EXEC sp_MSforeachdb
-'
+DECLARE @Command NVARCHAR(MAX);
+
+SET @Command = N'
 IF DB_ID(''?'') > 4
 AND DATABASEPROPERTYEX(''?'', ''Status'') = ''ONLINE''
 BEGIN
@@ -18,11 +19,15 @@ BEGIN
         SCHEMA_NAME(schema_id),
         name
     FROM [?].sys.procedures
-    WHERE name = ''' + @ProcedureName + '''
-END
-';
+    WHERE name = ''' + REPLACE(@ProcedureName, '''', '''''') + N'''
+END';
 
-SELECT *
+EXEC master.dbo.sp_MSforeachdb @Command;
+
+SELECT
+    DatabaseName,
+    SchemaName,
+    ProcedureName
 FROM #Results
 ORDER BY DatabaseName, SchemaName;
 
