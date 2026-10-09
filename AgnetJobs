@@ -1,0 +1,123 @@
+```powershell
+# SQL Server Agent Job Scripting
+# No Invoke-Sqlcmd or sqlcmd required
+
+$ServerName   = "YOUR_SQL_SERVER"
+$CommandFilter = "%xp_cmdshell%"   # SQL LIKE condition
+$OutputFile   = "C:\Temp\SQLAgent_Jobs.sql"
+
+# Load SMO
+Import-Module SqlServer -ErrorAction Stop
+
+# Create output folder if required
+$OutputFolder = Split-Path $OutputFile
+if (!(Test-Path $OutputFolder)) {
+    New-Item -ItemType Directory -Path $OutputFolder -Force |
+        Out-Null
+}
+
+# Connect using Windows Authentication
+$ConnectionString = @"
+Server=$ServerName;
+Database=msdb;
+Integrated Security=True;
+TrustServerCertificate=True;
+Application Name=PowerShell_JobScripting;
+"@
+
+$Connection = New-Object System.Data.SqlClient.SqlConnection(
+    $ConnectionString
+)
+
+try {
+    $Connection.Open()
+
+    # Find jobs whose step commands match the filter
+    $Query = @"
+SELECT DISTINCT j.name
+FROM msdb.dbo.sysjobs AS j
+INNER JOIN msdb.dbo.sysjobsteps AS s
+    ON j.job_id = s.job_id
+WHERE s.command LIKE @CommandFilter
+ORDER BY j.name;
+"@
+
+    $Command = $Connection.CreateCommand()
+    $Command.CommandText = $Query
+
+    $Parameter = $Command.Parameters.Add(
+        "@CommandFilter",
+        [System.Data.SqlDbType]::NVarChar,
+        -1
+    )
+    $Parameter.Value = $CommandFilter
+
+    $Reader = $Command.ExecuteReader()
+
+    $JobNames = @()
+    while ($Reader.Read()) {
+        $JobNames += $Reader["name"].ToString()
+    }
+
+    $Reader.Close()
+}
+finally {
+    $Connection.Dispose()
+}
+
+if ($JobNames.Count -eq 0) {
+    Write-Host "No jobs found for command filter: $CommandFilter"
+    return
+}
+
+# Connect through SMO
+$SmoConnection = New-Object `
+    Microsoft.SqlServer.Management.Common.ServerConnection(
+        $ServerName
+    )
+
+$SmoConnection.LoginSecure = $true
+
+$Server = New-Object Microsoft.SqlServer.Management.Smo.Server(
+    $SmoConnection
+)
+
+$Server.ConnectionContext.Connect()
+
+try {
+    $Output = New-Object System.Collections.Generic.List[string]
+
+    foreach ($JobName in $JobNames) {
+        $Job = $Server.JobServer.Jobs[$JobName]
+
+        if ($null -eq $Job) {
+            Write-Warning "Job not found in SMO: $JobName"
+            continue
+        }
+
+        Write-Host "Scripting job: $JobName"
+
+        $Output.Add("-- =========================================")
+        $Output.Add("-- Job: $JobName")
+        $Output.Add("-- =========================================")
+
+        foreach ($Line in $Job.Script()) {
+            $Output.Add($Line)
+        }
+
+        $Output.Add("")
+        $Output.Add("GO")
+        $Output.Add("")
+    }
+
+    # Export formatted SQL scripts
+    $Output | Set-Content -Path $OutputFile -Encoding UTF8
+
+    Write-Host "Completed successfully."
+    Write-Host "Jobs matched: $($JobNames.Count)"
+    Write-Host "Output file: $OutputFile"
+}
+finally {
+    $Server.ConnectionContext.Disconnect()
+}
+```
