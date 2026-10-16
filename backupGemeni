@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# ==========================================
+# MongoDB Backup Script
+# ==========================================
+
+# Configuration Variables (Update these or pass via environment)
+MONGODB_URI="${MONGO_BACKUP_URI:-mongodb://username:password@source-host:27017/?authSource=admin}"
+DB_NAME="${MONGO_DB_NAME:-my_database}"
+BACKUP_BASE_DIR="${MONGO_BACKUP_DIR:-./mongodb_backups}"
+
+# Timestamp and Log setup
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+BACKUP_DIR="${BACKUP_BASE_DIR}/${DB_NAME}_${TIMESTAMP}"
+LOG_FILE="${BACKUP_DIR}/backup_${TIMESTAMP}.log"
+
+# Create backup directory
+mkdir -p "$BACKUP_DIR"
+
+# Start time tracking
+START_TIME=$(date +%s)
+
+# Redirect all output to both console and log file using tee
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "=========================================="
+echo " [0%] Starting MongoDB Backup Process"
+echo " Target Database: $DB_NAME"
+echo " Backup Directory: $BACKUP_DIR"
+echo " Timestamp: $(date)"
+echo "=========================================="
+
+# Step 1: Pre-flight checks (20% progress)
+echo ""
+echo "------------------------------------------"
+echo " Step 1/3: Validating tools and connection [20%]"
+echo "------------------------------------------"
+if ! command -v mongodump &> /dev/null; then
+    echo "Error: 'mongodump' command not found. Please install MongoDB Database Tools."
+    exit 1
+fi
+echo "Validation successful."
+
+# Step 2: Executing mongodump with compression (60% progress)
+echo ""
+echo "------------------------------------------"
+echo " Step 2/3: Executing mongodump (Compressed) [60%]"
+echo "------------------------------------------"
+
+mongodump \
+    --uri="$MONGODB_URI" \
+    --db="$DB_NAME" \
+    --gzip \
+    --out="$BACKUP_DIR"
+
+DUMP_STATUS=$?
+
+if [ $DUMP_STATUS -eq 0 ]; then
+    echo "mongodump completed successfully."
+else
+    echo "Error: mongodump failed with exit code $DUMP_STATUS."
+    exit $DUMP_STATUS
+fi
+
+# Step 3: Finalizing and Summary (100% progress)
+echo ""
+echo "------------------------------------------"
+echo " Step 3/3: Finalizing Backup Package [100%]"
+echo "------------------------------------------"
+echo "Backup files saved successfully inside: $BACKUP_DIR"
+
+# Calculate total duration
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+MINUTES=$((DURATION / 60))
+SECONDS=$((DURATION % 60))
+
+echo ""
+echo "=========================================="
+echo " Backup Process Completed Successfully!"
+echo " Total Duration: ${MINUTES}m ${SECONDS}s (${DURATION} seconds)"
+echo " Log file saved at: $LOG_FILE"
+echo "=========================================="
