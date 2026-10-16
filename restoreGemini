@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# ==========================================
+# MongoDB Restore Script
+# ==========================================
+
+# Configuration Variables (Update these or pass via environment)
+MONGODB_URI="${MONGO_RESTORE_URI:-mongodb://username:password@target-host:27017/?authSource=admin}"
+DB_NAME="${MONGO_DB_NAME:-my_database}"
+RESTORE_SOURCE_PATH="${1:-}" # Pass the path to the specific database dump folder as an argument
+
+# Timestamp and Log setup
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+LOG_FILE="./restore_${DB_NAME}_${TIMESTAMP}.log"
+
+# Start time tracking
+START_TIME=$(date +%s)
+
+# Redirect all output to both console and log file using tee
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "=========================================="
+echo " [0%] Starting MongoDB Restore Process"
+echo " Target Database: $DB_NAME"
+echo " Source Path: $RESTORE_SOURCE_PATH"
+echo " Timestamp: $(date)"
+echo "=========================================="
+
+# Step 1: Validation (20% progress)
+echo ""
+echo "------------------------------------------"
+echo " Step 1/3: Validating Environment [20%]"
+echo "------------------------------------------"
+if ! command -v mongorestore &> /dev/null; then
+    echo "Error: 'mongorestore' command not found. Please install MongoDB Database Tools."
+    exit 1
+fi
+
+if [ -z "$RESTORE_SOURCE_PATH" ] || [ ! -d "$RESTORE_SOURCE_PATH" ]; then
+    echo "Error: Invalid or missing backup path provided."
+    echo "Usage: ./mongo_restore.sh /path/to/backup_folder/$DB_NAME"
+    exit 1
+fi
+echo "Validation successful."
+
+# Step 2: Executing mongorestore with compression (70% progress)
+echo ""
+echo "------------------------------------------"
+echo " Step 2/3: Executing mongorestore (Compressed) [70%]"
+echo "------------------------------------------"
+
+mongorestore \
+    --uri="$MONGODB_URI" \
+    --db="$DB_NAME" \
+    --gzip \
+    "$RESTORE_SOURCE_PATH"
+
+RESTORE_STATUS=$?
+
+if [ $RESTORE_STATUS -eq 0 ]; then
+    echo "mongorestore completed successfully."
+else
+    echo "Error: mongorestore failed with exit code $RESTORE_STATUS."
+    exit $RESTORE_STATUS
+fi
+
+# Step 3: Finalizing and Summary (100% progress)
+echo ""
+echo "------------------------------------------"
+echo " Step 3/3: Finalizing Restore Process [100%]"
+echo "------------------------------------------"
+
+# Calculate total duration
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+MINUTES=$((DURATION / 60))
+SECONDS=$((DURATION % 60))
+
+echo ""
+echo "=========================================="
+echo " Restore Process Completed Successfully!"
+echo " Total Duration: ${MINUTES}m ${SECONDS}s (${DURATION} seconds)"
+echo " Log file saved at: $LOG_FILE"
+echo "=========================================="
