@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# backup.sh — dump one MongoDB database to a compressed archive.
+#
+# Usage:
+#   ./backup.sh -u "<mongodb-uri>" -n "<db-name>" [-o <output-dir>] [-r <days>]
+#
+# Example:
+#   ./backup.sh -u "mongodb://user:pass@localhost:27017/?authSource=admin" -n appdb
+#
+set -Eeuo pipefail
+
+# ---------- defaults ----------
+URI=""
+DB_NAME=""
+OUT_DIR="${OUT_DIR:-./backups}"
+RETENTION_DAYS="${RETENTION_DAYS:-7}"
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") -u <mongo-uri> -n <db-name> [options]
+
+  -u <uri>    MongoDB connection URI (required)
+  -n <name>   Database name to back up (required)
+  -o <dir>    Where to store archives (default: ${OUT_DIR})
+  -r <days>   Delete archives older than this (default: ${RETENTION_DAYS})
+  -h          Show this help
+
+Example:
+  $(basename "$0") -u "mongodb://user:pass@host:27017/?authSource=admin" -n appdb
+EOF
+}
+
+# ---------- logging: console + log file ----------
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE=""
+log() {
+  local line
+  line="$(date '+%Y-%m-%d %H:%M:%S') [$1] ${*:2}"
+  echo "$line"
+  [[ -n "$LOG_FILE" ]] && echo "$line" >>"$LOG_FILE"
+}
+info() { log INFO "$@"; }
+step() { log STEP "===> $*"; }
+die()  { log ERROR "$@" >&2; exit 1; }
+
+trap 'die "Failed at line $LINENO (exit $?)"' ERR
+
+# hide the password when printing the URI
+safe_uri() { sed -E 's#(mongodb(\+srv)?://)[^@/]*@#\1***:***@#' <<<"$1"; }
+
+# ---------- parse arguments ----------
+while getopts ":u:n:o:r:h" opt; do
+  case "$opt" in
+    u) URI="$OPTARG" ;;
+    n) DB_NAME="$OPTARG" ;;
+    o) OUT_DIR="$OPTARG" ;;
+    r) RETENTION_DAYS="$OPTARG" ;;
+    h) usage; exit 0 ;;
+    \?) die "Unknown option -$OPTARG (try -h)" ;;
+    :)  die "Option -$OPTARG needs a value" ;;
+  esac
+done
+
+[[ -n "$URI" ]]     || { usage; exit 1; }
+[[ -n "$DB_NAME" ]] || { usage; exit 1; }
+command -v mongodump >/dev/null || die "mongodump not found. Install mongodb-database-tools."
+
+# ---------- prepare ----------
+mkdir -p "$OUT_DIR"
+LOG_FILE="${OUT_DIR}/backup_${DB_NAME}_${RUN_TS}.log"
+
+ARCHIVE="${OUT_DIR}/${DB_NAME}_${RUN_TS}.gz"
+START=$SECONDS
+
+step "BACKUP START"
+info "database : ${DB_NAME}"
+info "source   : $(safe_uri "$URI")"
+info "archive  : ${ARCHIVE}"
+info "log file : ${LOG_FILE}"
+
+# ---------- dump ----------
+step "Running mongodump (gzip compressed archive)"
+mongodump \
+  --uri="$URI" \
+  --db="$DB_NAME" \
+  --gzip \
+  --archive="$ARCHIVE"
+
+[[ -s "$ARCHIVE" ]] || die "Archive is empty or missing: $ARCHIVE"
+info "Archive size: $(du -h "$ARCHIVE" | cut -f1)"
+
+# ---------- retention ----------
+step "Cleaning archives older than ${RETENTION_DAYS} day(s)"
+find "$OUT_DIR" -maxdepth 1 -name "${DB_NAME}_*.gz" -type f \
+     -mtime "+${RETENTION_DAYS}" -print -delete | while read -r f; do
+  info "removed: $(basename "$f")"
+done
+
+# ---------- done ----------
+DURATION=$((SECONDS - START))
+step "BACKUP COMPLETE"
+info "archive  : ${ARCHIVE}"
+info "duration : $((DURATION / 60))m $((DURATION % 60))s"
