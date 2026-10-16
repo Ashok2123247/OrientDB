@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# restore.sh — restore a compressed archive into one MongoDB database.
+#
+# Usage:
+#   ./restore.sh -u "<mongodb-uri>" -n "<db-name>" -f <archive.gz> [-d]
+#
+# Example:
+#   ./restore.sh -u "mongodb://user:pass@dev-host:27017/?authSource=admin" \
+#                -n appdb -f ./backups/appdb_20261016_101500.gz -d
+#
+set -Eeuo pipefail
+
+# ---------- defaults ----------
+URI=""
+DB_NAME=""
+ARCHIVE=""
+DROP="false"          # -d wipes existing collections first
+LOG_DIR="${LOG_DIR:-./logs}"
+
+# ---------- usage ----------
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") -u <mongo-uri> -n <db-name> -f <archive.gz> [-d]
+
+  -u <uri>    MongoDB connection URI of the TARGET server (required)
+  -n <name>   Database name to restore into (required)
+  -f <file>   Path to the .gz archive (required)
+  -d          Pass --drop: delete existing collections first
+  -h          Show this help
+
+Example:
+  $(basename "$0") -u "mongodb://user:pass@dev-host:27017/?authSource=admin" \\
+                   -n appdb -f ./backups/appdb_20261016_101500.gz -d
+EOF
+}
+
+# ---------- logging: console + log file ----------
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE=""
+log() {
+  local line
+  line="$(date '+%Y-%m-%d %H:%M:%S') [$1] ${*:2}"
+  echo "$line"
+  [[ -n "$LOG_FILE" ]] && echo "$line" >>"$LOG_FILE"
+}
+info() { log INFO "$@"; }
+step() { log STEP "===> $*"; }
+die()  { log ERROR "$@" >&2; exit 1; }
+
+trap 'die "Failed at line $LINENO (exit $?)"' ERR
+
+safe_uri() { sed -E 's#(mongodb(\+srv)?://)[^@/]*@#\1***:***@#' <<<"$1"; }
+
+# ---------- parse arguments ----------
+while getopts ":u:n:f:dh" opt; do
+  case "$opt" in
+    u) URI="$OPTARG" ;;
+    n) DB_NAME="$OPTARG" ;;
+    f) ARCHIVE="$OPTARG" ;;
+    d) DROP="true" ;;
+    h) usage; exit 0 ;;
+    \?) die "Unknown option -$OPTARG (try -h)" ;;
+    :)  die "Option -$OPTARG needs a value" ;;
+  esac
+done
+
+[[ -n "$URI" ]]     || { usage; exit 1; }
+[[ -n "$DB_NAME" ]] || { usage; exit 1; }
+[[ -n "$ARCHIVE" ]] || { usage; exit 1; }
+[[ -f "$ARCHIVE" ]] || die "Archive not found: $ARCHIVE"
+command -v mongorestore >/dev/null || die "mongorestore not found. Install mongodb-database-tools."
+
+# ---------- prepare ----------
+mkdir -p "$LOG_DIR"
+LOG_FILE="${LOG_DIR}/restore_${DB_NAME}_${RUN_TS}.log"
+START=$SECONDS
+
+step "RESTORE START"
+info "database : ${DB_NAME}"
+info "target   : $(safe_uri "$URI")"
+info "archive  : ${ARCHIVE}"
+info "drop     : ${DROP}"
+info "log file : ${LOG_FILE}"
+
+# ---------- restore ----------
+step "Running mongorestore"
+ARGS=(
+  --uri="$URI"
+  --gzip
+  --archive="$ARCHIVE"
+  --nsInclude="${DB_NAME}.*"
+)
+[[ "$DROP" == "true" ]] && ARGS+=(--drop)
+
+mongorestore "${ARGS[@]}"
+
+# ---------- done ----------
+DURATION=$((SECONDS - START))
+step "RESTORE COMPLETE"
+info "database : ${DB_NAME} restored"
+info "duration : $((DURATION / 60))m $((DURATION % 60))s"
