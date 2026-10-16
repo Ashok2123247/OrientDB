@@ -81,3 +81,16 @@ echo " Backup Process Completed Successfully!"
 echo " Total Duration: ${MINUTES}m ${SECONDS}s (${DURATION} seconds)"
 echo " Log file saved at: $LOG_FILE"
 echo "=========================================="
+
+
+
+
+
+export MONGO_BACKUP_URI="mongodb://admin:secret@source-cluster.mongodb.net/?retryWrites=true"
+export MONGO_DB_NAME="production_db"
+./mongo_backup.sh
+
+
+export MONGO_RESTORE_URI="mongodb://admin:secret@target-cluster.mongodb.net/?retryWrites=true"
+export MONGO_DB_NAME="production_db"
+./mongo_restore.sh ./mongodb_backups/production_db_20261016_231500/production_db
