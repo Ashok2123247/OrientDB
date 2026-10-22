@@ -1,0 +1,200 @@
+
+# ------------------------------------------------------------
+# Script : Export-SystemXpCmdShellJobs.ps1
+# Purpose: Export enabled System* SQL Agent jobs using xp_cmdshell
+# Filter : T-SQL query against msdb
+# Output : One DROP + CREATE .sql file per matching job
+# No Invoke-Sqlcmd or sqlcmd.exe
+# ------------------------------------------------------------
+
+# ---------------- CONFIGURATION -----------------------------
+
+$ServerInstance = "YOUR_SQL_SERVER\INSTANCE"
+$OutputFolder   = "C:\SQLAgentJobScripts"
+
+# Windows Authentication
+# ------------------------------------------------------------
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path -LiteralPath $OutputFolder)) {
+    New-Item -Path $OutputFolder -ItemType Directory -Force |
+        Out-Null
+}
+
+$LogFile = Join-Path $OutputFolder "ExportJobs.log"
+
+function Write-Log {
+    param([string]$Message)
+
+    $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogMessage = "[$TimeStamp] $Message"
+
+    Write-Host $LogMessage
+    Add-Content -LiteralPath $LogFile -Value $LogMessage
+}
+
+try {
+    Write-Log "Starting SQL Agent job export."
+    Write-Log "Connecting to $ServerInstance"
+
+    # --------------------------------------------------------
+    # STEP 1: FILTER JOBS USING T-SQL
+    # --------------------------------------------------------
+
+    $Query = @"
+SELECT DISTINCT
+       j.name AS JobName
+FROM msdb.dbo.sysjobs AS j
+WHERE j.enabled = 1
+  AND j.name LIKE N'System%'
+  AND EXISTS
+  (
+      SELECT 1
+      FROM msdb.dbo.sysjobsteps AS s
+      WHERE s.job_id = j.job_id
+        AND s.command LIKE N'%xp[_]cmdshell%'
+  )
+ORDER BY j.name;
+"@
+
+    $ConnectionString = (
+        "Data Source=$ServerInstance;" +
+        "Initial Catalog=msdb;" +
+        "Integrated Security=SSPI;" +
+        "Application Name=PowerShell Job Export"
+    )
+
+    $Connection = New-Object System.Data.SqlClient.SqlConnection(
+        $ConnectionString
+    )
+
+    $JobNames = New-Object 'System.Collections.Generic.List[string]'
+
+    try {
+        $Connection.Open()
+
+        $Command = $Connection.CreateCommand()
+        $Command.CommandText = $Query
+        $Command.CommandTimeout = 60
+
+        $Reader = $Command.ExecuteReader()
+
+        try {
+            while ($Reader.Read()) {
+                $JobNames.Add($Reader.GetString(0))
+            }
+        }
+        finally {
+            $Reader.Close()
+        }
+    }
+    finally {
+        if ($Connection.State -ne 'Closed') {
+            $Connection.Close()
+        }
+
+        $Connection.Dispose()
+    }
+
+    Write-Log "T-SQL filtering completed."
+    Write-Log "Matching jobs found: $($JobNames.Count)"
+
+    if ($JobNames.Count -eq 0) {
+        Write-Log "No matching enabled jobs found."
+        return
+    }
+
+    # --------------------------------------------------------
+    # STEP 2: CONNECT USING SMO FOR SCRIPT GENERATION
+    # --------------------------------------------------------
+
+    Import-Module SqlServer -ErrorAction Stop
+
+    $Server = New-Object Microsoft.SqlServer.Management.Smo.Server(
+        $ServerInstance
+    )
+
+    $DropOptions =
+        New-Object Microsoft.SqlServer.Management.Smo.ScriptingOptions
+
+    $DropOptions.ScriptDrops = $true
+    $DropOptions.ScriptBatchTerminator = $true
+    $DropOptions.IncludeHeaders = $true
+
+    $CreateOptions =
+        New-Object Microsoft.SqlServer.Management.Smo.ScriptingOptions
+
+    $CreateOptions.ScriptBatchTerminator = $true
+    $CreateOptions.IncludeHeaders = $true
+    $CreateOptions.AnsiFile = $false
+
+    # --------------------------------------------------------
+    # STEP 3: SCRIPT EACH JOB INTO AN INDIVIDUAL SQL FILE
+    # --------------------------------------------------------
+
+    foreach ($JobName in $JobNames) {
+
+        $SafeJobName = $JobName
+
+        foreach ($Character in
+            [System.IO.Path]::GetInvalidFileNameChars()) {
+
+            $SafeJobName = $SafeJobName.Replace(
+                [string]$Character, "_"
+            )
+        }
+
+        $OutputFile = Join-Path $OutputFolder "$SafeJobName.sql"
+        $TempFile = "$OutputFile.tmp"
+
+        try {
+            Write-Log "Processing job: $JobName"
+
+            $Job = $Server.JobServer.Jobs[$JobName]
+
+            if ($null -eq $Job) {
+                throw "Job not found in SMO: $JobName"
+            }
+
+            $DropScript = $Job.Script($DropOptions)
+            $CreateScript = $Job.Script($CreateOptions)
+
+            $ScriptContent = @(
+                "-- Job Name: $JobName"
+                "-- Source Server: $ServerInstance"
+                "-- Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                ""
+                "-- ================= DROP JOB ================="
+                ""
+                $DropScript
+                ""
+                "-- ================ CREATE JOB ================"
+                ""
+                $CreateScript
+            ) -join [Environment]::NewLine
+
+            Set-Content -LiteralPath $TempFile `
+                -Value $ScriptContent -Encoding UTF8
+
+            Move-Item -LiteralPath $TempFile `
+                -Destination $OutputFile -Force
+
+            Write-Log "SUCCESS: $OutputFile"
+        }
+        catch {
+            if (Test-Path -LiteralPath $TempFile) {
+                Remove-Item -LiteralPath $TempFile -Force
+            }
+
+            Write-Log "ERROR: $JobName - $($_.Exception.Message)"
+        }
+    }
+
+    Write-Log "Export completed."
+    Write-Log "Output folder: $OutputFolder"
+}
+catch {
+    Write-Log "FATAL ERROR: $($_.Exception.Message)"
+    throw
+}
