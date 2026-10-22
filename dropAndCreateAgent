@@ -1,0 +1,177 @@
+## Install-Module SqlServer -Scope CurrentUser
+
+## .\Export-SystemXpCmdShellJobs.ps1
+# ------------------------------------------------------------
+# Script : Export-SystemXpCmdShellJobs.ps1
+# Purpose: Export enabled SQL Agent jobs whose names start
+#          with "System" and contain xp_cmdshell in a job step.
+# Output : One DROP + CREATE .sql file per matching job
+# Method : SMO - No Invoke-Sqlcmd or sqlcmd.exe
+# ------------------------------------------------------------
+
+# ---------------- CONFIGURATION -----------------------------
+
+$ServerInstance = "YOUR_SQL_SERVER\INSTANCE"
+$OutputFolder   = "C:\SQLAgentJobScripts"
+
+# Use Windows Integrated Authentication.
+# The executing account needs permission to read and script jobs.
+
+# ------------------------------------------------------------
+
+$ErrorActionPreference = "Stop"
+
+$LogFile = Join-Path $OutputFolder "ExportJobs.log"
+
+# Create output folder if it does not exist
+if (-not (Test-Path -LiteralPath $OutputFolder)) {
+    New-Item -Path $OutputFolder -ItemType Directory -Force |
+        Out-Null
+}
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    $TimeStamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $LogMessage = "[$TimeStamp] $Message"
+
+    Write-Host $LogMessage
+    Add-Content -LiteralPath $LogFile -Value $LogMessage
+}
+
+try {
+    Write-Log "Starting SQL Agent job export."
+    Write-Log "Connecting to server: $ServerInstance"
+
+    # Load SMO assemblies from the installed SqlServer module.
+    Import-Module SqlServer -ErrorAction Stop
+
+    # Connect using Windows Authentication.
+    $Server = New-Object Microsoft.SqlServer.Management.Smo.Server(
+        $ServerInstance
+    )
+
+    # Test connection by accessing the server name.
+    $ConnectedServer = $Server.Name
+    Write-Log "Connected successfully to $ConnectedServer"
+
+    # SMO scripting options
+    $CreateOptions =
+        New-Object Microsoft.SqlServer.Management.Smo.ScriptingOptions
+
+    $CreateOptions.ScriptBatchTerminator = $true
+    $CreateOptions.IncludeHeaders = $true
+    $CreateOptions.AnsiFile = $false
+    $CreateOptions.SchemaQualify = $false
+
+    $DropOptions =
+        New-Object Microsoft.SqlServer.Management.Smo.ScriptingOptions
+
+    $DropOptions.ScriptDrops = $true
+    $DropOptions.ScriptBatchTerminator = $true
+    $DropOptions.IncludeHeaders = $true
+    $DropOptions.AnsiFile = $false
+
+    # Find enabled jobs whose names start with System
+    # and whose job-step command contains xp_cmdshell.
+    $MatchingJobs = @(
+        foreach ($Job in $Server.JobServer.Jobs) {
+
+            if (-not $Job.IsEnabled) {
+                continue
+            }
+
+            if (-not $Job.Name.StartsWith(
+                "System",
+                [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+                continue
+            }
+
+            $UsesXpCmdShell = $false
+
+            foreach ($Step in $Job.JobSteps) {
+                if ($Step.Command -match '(?i)\bxp_cmdshell\b') {
+                    $UsesXpCmdShell = $true
+                    break
+                }
+            }
+
+            if ($UsesXpCmdShell) {
+                $Job
+            }
+        }
+    )
+
+    if ($MatchingJobs.Count -eq 0) {
+        Write-Log "No matching enabled jobs were found."
+        exit 0
+    }
+
+    Write-Log "Matching jobs found: $($MatchingJobs.Count)"
+
+    foreach ($Job in $MatchingJobs) {
+
+        # Replace characters that are invalid in Windows filenames.
+        $SafeJobName = $Job.Name
+        foreach ($Character in [System.IO.Path]::GetInvalidFileNameChars()) {
+            $SafeJobName = $SafeJobName.Replace(
+                [string]$Character,
+                "_"
+            )
+        }
+
+        $OutputFile = Join-Path $OutputFolder "$SafeJobName.sql"
+        $TempFile = "$OutputFile.tmp"
+
+        try {
+            Write-Log "Scripting job: $($Job.Name)"
+
+            # Generate DROP and CREATE scripts.
+            $DropScript = $Job.Script($DropOptions)
+            $CreateScript = $Job.Script($CreateOptions)
+
+            # Build complete output content.
+            $ScriptContent = @(
+                "-- SQL Agent Job: $($Job.Name)"
+                "-- Source Server: $ConnectedServer"
+                "-- Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                "-- Includes DROP and CREATE scripts."
+                ""
+                "-- ================= DROP JOB ================="
+                ""
+                $DropScript
+                ""
+                "-- ================ CREATE JOB ================"
+                ""
+                $CreateScript
+            ) -join [Environment]::NewLine
+
+            # Write to a temporary file first, then rename on success.
+            Set-Content -LiteralPath $TempFile `
+                -Value $ScriptContent -Encoding UTF8
+
+            Move-Item -LiteralPath $TempFile `
+                -Destination $OutputFile -Force
+
+            Write-Log "SUCCESS: $OutputFile"
+        }
+        catch {
+            if (Test-Path -LiteralPath $TempFile) {
+                Remove-Item -LiteralPath $TempFile -Force
+            }
+
+            Write-Log "ERROR scripting '$($Job.Name)': $($_.Exception.Message)"
+        }
+    }
+
+    Write-Log "Job export completed."
+    Write-Log "Output folder: $OutputFolder"
+}
+catch {
+    Write-Log "FATAL ERROR: $($_.Exception.Message)"
+    throw
+}
