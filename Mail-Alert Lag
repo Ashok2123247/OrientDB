@@ -1,0 +1,110 @@
+
+#!/bin/bash
+
+# PostgreSQL Connection Details
+PGHOST="localhost"
+PGPORT="5432"
+PGDATABASE="your_database"
+PGUSER="your_user"
+
+# Alert Configuration
+THRESHOLD=100000
+MAIL_TO="dba-team@company.com"
+MAIL_FROM="postgres-alert@company.com"
+HOSTNAME=$(hostname)
+DATE=$(date '+%Y-%m-%d %H:%M:%S')
+
+# Temporary files
+TMPFILE="/tmp/pg_lag_result.txt"
+HTMLFILE="/tmp/pg_lag_alert.html"
+
+# Execute your existing SQL query
+psql -h "$PGHOST" -p "$PGPORT" \
+     -U "$PGUSER" -d "$PGDATABASE" \
+     -X -A -F '|' -t -c "
+     -- PLACE YOUR EXISTING SQL QUERY HERE
+     " > "$TMPFILE"
+
+if [ $? -ne 0 ]; then
+    echo "PostgreSQL query execution failed"
+    exit 1
+fi
+
+# Check whether any consumer exceeds threshold
+ALERT_DATA=""
+
+while IFS='|' read -r consumer lag
+do
+    [ -z "$consumer" ] && continue
+
+    # Numeric comparison
+    if [ "$lag" -gt "$THRESHOLD" ] 2>/dev/null; then
+
+        ALERT_DATA+="<tr>
+        <td>$consumer</td>
+        <td style='color:red;font-weight:bold;'>$lag</td>
+        <td style='color:red;font-weight:bold;'>CRITICAL</td>
+        </tr>"
+    fi
+
+done < "$TMPFILE"
+
+# Send email only if threshold is exceeded
+if [ -n "$ALERT_DATA" ]; then
+
+cat > "$HTMLFILE" <<EOF
+<html>
+<body style="font-family:Arial,sans-serif;">
+
+<h2 style="color:red;">PostgreSQL Application Lag Alert</h2>
+
+<p><b>Alert Description:</b>
+Application consumer lag has exceeded the configured threshold.</p>
+
+<p><b>Server:</b> $HOSTNAME</p>
+<p><b>Database:</b> $PGDATABASE</p>
+<p><b>Threshold:</b> $THRESHOLD</p>
+<p><b>Alert Time:</b> $DATE</p>
+
+<table border="1" cellpadding="8" cellspacing="0"
+style="border-collapse:collapse;width:80%;">
+
+<tr style="background-color:#333;color:white;">
+<th>Consumer Name</th>
+<th>Current Lag</th>
+<th>Status</th>
+</tr>
+
+$ALERT_DATA
+
+</table>
+
+<p style="color:red;font-weight:bold;">
+Action Required: Please investigate the application consumer lag.
+</p>
+
+<p>Regards,<br>PostgreSQL Monitoring System</p>
+
+</body>
+</html>
+EOF
+
+    # Send HTML email
+    {
+        echo "From: $MAIL_FROM"
+        echo "To: $MAIL_TO"
+        echo "Subject: CRITICAL - PostgreSQL Application Lag Alert"
+        echo "MIME-Version: 1.0"
+        echo "Content-Type: text/html; charset=UTF-8"
+        echo ""
+        cat "$HTMLFILE"
+    } | /usr/sbin/sendmail -t
+
+    echo "Alert email sent successfully"
+
+else
+    echo "No consumer lag exceeded $THRESHOLD"
+fi
+
+# Cleanup
+rm -f "$TMPFILE" "$HTMLFILE"
