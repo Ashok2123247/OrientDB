@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+DEV_URI="${DEV_URI:-mongodb://localhost:27017}"
+QA_URI="${QA_URI:-mongodb://localhost:27017}"
+DB_NAME="${DB_NAME:-app_db}"
+OUT_CSV="${OUT_CSV:-mongo_index_comparison.csv}"
+
+# Set to "true" if you want to ignore the default _id_ index during comparison
+IGNORE_ID_INDEX="${IGNORE_ID_INDEX:-false}"
+
+for cmd in mongosh jq; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Error: '$cmd' is required but not installed." >&2
+    exit 1
+  fi
+done
+
+# Helper: fetch normalized index definitions per collection as JSON object:
+# { "collectionName": { "indexKey": { ...options... } } }
+fetch_indexes() {
+  local uri="$1"
+  local db="$2"
+  local ignore_id="$3"
+
+  mongosh "$uri/$db" --quiet --eval "
+    const ignoreId = ${ignore_id};
+    const result = {};
+    const cols = db.getCollectionNames().sort();
+
+    for (const colName of cols) {
+      if (colName.startsWith('system.')) continue;
+      const indexes = db.getCollection(colName).getIndexes();
+      const colMap = {};
+
+      for (const idx of indexes) {
+        if (ignoreId && idx.name === '_id_') continue;
+
+        // Normalize key order so { a: 1, b: -1 } is canonicalized consistently
+        const sortedKey = {};
+        for (const k of Object.keys(idx.key || {}).sort()) {
+          sortedKey[k] = idx.key[k];
+        }
+
+        // Capture meaningful index properties (exclude 'v', 'ns', and sometimes 'name' if auto-generated)
+        const spec = { key: sortedKey };
+        for (const prop of ['unique', 'sparse', 'expireAfterSeconds', 'partialFilterExpression', 'wildcardProjection', 'collation']) {
+          if (idx[prop] !== undefined) {
+            spec[prop] = idx[prop];
+          }
+        }
+
+        // Use canonical key signature as identifier (or name if duplicate key specs exist)
+        const sig = JSON.stringify(spec.key);
+        const mapKey = colMap[sig] ? \`\${sig}::\${idx.name}\` : sig;
+        colMap[mapKey] = {
+          name: idx.name,
+          spec: spec
+        };
+      }
+
+      result[colName] = colMap;
+    }
+
+    print(JSON.stringify(result));
+  "
+}
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+DEV_JSON="$TMP_DIR/dev.json"
+QA_JSON="$TMP_DIR/qa.json"
+
+fetch_indexes "$DEV_URI" "$DB_NAME" "$IGNORE_ID_INDEX" > "$DEV_JSON"
+fetch_indexes "$QA_URI" "$DB_NAME" "$IGNORE_ID_INDEX" > "$QA_JSON"
+
+# Write CSV header matching requested format
+echo "collection name,  Dev Indexes, QA indexes, compare (match/notmatch), comment if not match" > "$OUT_CSV"
+
+# Compare all collections across Dev and QA and emit CSV rows
+jq -r --slurpfile dev "$DEV_JSON" --slurpfile qa "$QA_JSON" '
+  def csv_escape(s):
+    "\"" + (tostring | gsub("\""; "\"\"")) + "\"";
+
+  def fmt_idx_list(obj):
+    if (obj | length) == 0 then
+      "NONE"
+    else
+      [obj[] | "\(.name)\(if .spec.unique then " [unique]" else "" end)\(if .spec.expireAfterSeconds != null then " [ttl:\(.spec.expireAfterSeconds)s]" else "" end)\(if .spec.partialFilterExpression != null then " [partial]" else "" end)\(if .spec.sparse then " [sparse]" else "" end)"]
+      | join("; ")
+    end;
+
+  def canonical_map(obj):
+    reduce (obj | to_entries[]) as $e ({};
+      . + { ($e.key): ($e.value.spec | tostring) }
+    );
+
+  ($dev[0]) as $d |
+  ($qa[0]) as $q |
+  ([($d | keys[]), ($q | keys[])] | unique | sort)[] as $col |
+
+  ($d[$col] // {}) as $d_col |
+  ($q[$col] // {}) as $q_col |
+  (canonical_map($d_col)) as $d_canon |
+  (canonical_map($q_col)) as $q_canon |
+
+  (fmt_idx_list($d_col)) as $dev_str |
+  (fmt_idx_list($q_col)) as $qa_str |
+
+  if ($d_canon == $q_canon) then
+    [
+      csv_escape($col),
+      csv_escape($dev_str),
+      csv_escape($qa_str),
+      csv_escape("match"),
+      csv_escape("")
+    ] | join(",")
+  else
+    # Build detailed mismatch comment
+    (
+      [
+        (if ($d | has($col) | not) then "Collection missing in Dev" else empty end),
+        (if ($q | has($col) | not) then "Collection missing in QA" else empty end),
+        (
+          [($d_canon | keys[]), ($q_canon | keys[])] | unique[] as $k |
+          if ($d_canon | has($k)) and ($q_canon | has($k) | not) then
+            "Index \($d_col[$k].name) (\($k)) present in Dev only"
+          elif ($q_canon | has($k)) and ($d_canon | has($k) | not) then
+            "Index \($q_col[$k].name) (\($k)) present in QA only"
+          elif ($d_canon[$k] != $q_canon[$k]) then
+            "Index options/definition differ for \($k) (Dev: \($d_col[$k].name), QA: \($q_col[$k].name))"
+          else
+            empty
+          end
+        )
+      ] | join(" | ")
+    ) as $comment |
+    [
+      csv_escape($col),
+      csv_escape($dev_str),
+      csv_escape($qa_str),
+      csv_escape("notmatch"),
+      csv_escape($comment)
+    ] | join(",")
+  end
+' >> "$OUT_CSV"
+
+echo "Comparison complete. Output saved to: $OUT_CSV"
