@@ -1,0 +1,90 @@
+
+#!/bin/bash
+
+DEV_URI="mongodb://devuser:password@dev-server:27017/?authSource=admin"
+QA_URI="mongodb://qauser:password@qa-server:27017/?authSource=admin"
+
+DB_NAME="your_database"
+
+REPORT="mongodb_index_comparison.csv"
+
+DEV_JSON="/tmp/dev_indexes.json"
+QA_JSON="/tmp/qa_indexes.json"
+
+# Collect indexes
+get_indexes() {
+    mongosh "$1" --quiet --eval "
+        const database = db.getSiblingDB('$DB_NAME');
+        let result = {};
+
+        database.listCollections({type:'collection'}).toArray().forEach(col => {
+            let indexes = database.getCollection(col.name).getIndexes();
+
+            indexes.forEach(idx => {
+                delete idx.ns;
+                delete idx.v;
+            });
+
+            indexes.sort((a,b) => a.name.localeCompare(b.name));
+            result[col.name] = indexes;
+        });
+
+        print(JSON.stringify(result));
+    " > "$2"
+}
+
+echo "Collecting Dev indexes..."
+get_indexes "$DEV_URI" "$DEV_JSON"
+
+echo "Collecting QA indexes..."
+get_indexes "$QA_URI" "$QA_JSON"
+
+# CSV Header
+echo '"Collection Name","Dev Indexes","QA Indexes","Compare","Comment"' > "$REPORT"
+
+# Get all collections
+COLLECTIONS=$(jq -r -s '.[0] + .[1] | keys | unique | .[]' \
+    "$DEV_JSON" "$QA_JSON")
+
+while IFS= read -r COLLECTION
+do
+    DEV_EXISTS=$(jq -r --arg c "$COLLECTION" 'has($c)' "$DEV_JSON")
+    QA_EXISTS=$(jq -r --arg c "$COLLECTION" 'has($c)' "$QA_JSON")
+
+    DEV_INDEXES=$(jq -c --arg c "$COLLECTION" \
+        '[.[$c][]?.name] | sort' "$DEV_JSON")
+
+    QA_INDEXES=$(jq -c --arg c "$COLLECTION" \
+        '[.[$c][]?.name] | sort' "$QA_JSON")
+
+    COMPARE="MATCH"
+    COMMENT=""
+
+    if [ "$DEV_EXISTS" = "false" ]; then
+        COMPARE="NOTMATCH"
+        COMMENT="Collection missing in Dev"
+
+    elif [ "$QA_EXISTS" = "false" ]; then
+        COMPARE="NOTMATCH"
+        COMMENT="Collection missing in QA"
+
+    elif [ "$DEV_INDEXES" != "$QA_INDEXES" ]; then
+        COMPARE="NOTMATCH"
+        COMMENT="Index names differ between Dev and QA"
+    fi
+
+    jq -n \
+        --arg c "$COLLECTION" \
+        --arg d "$DEV_INDEXES" \
+        --arg q "$QA_INDEXES" \
+        --arg cmp "$COMPARE" \
+        --arg comment "$COMMENT" \
+        '[$c,$d,$q,$cmp,$comment] | @csv' >> "$REPORT"
+
+    echo "$COLLECTION : $COMPARE"
+
+done <<< "$COLLECTIONS"
+
+rm -f "$DEV_JSON" "$QA_JSON"
+
+echo "Comparison completed: $REPORT"
