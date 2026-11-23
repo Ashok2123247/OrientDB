@@ -1,0 +1,307 @@
+
+#!/bin/bash
+
+###############################################################################
+# PostgreSQL Application Lag Monitoring and Alert Script
+#
+# 1. Initial alert threshold: 100000
+# 2. Subsequent alert increment: 50000
+# 3. Only ONE email per alert level
+# 4. Track total emails sent
+# 5. Maintain consumer-specific alert history
+# 6. HTML email with red critical alert
+###############################################################################
+
+# ---------------- PostgreSQL Configuration ----------------
+
+PGHOST="localhost"
+PGPORT="5432"
+PGDATABASE="your_database"
+PGUSER="your_user"
+
+# ---------------- Alert Configuration ---------------------
+
+THRESHOLD=100000
+INCREASE_LIMIT=50000
+
+MAIL_TO="dba-team@company.com"
+MAIL_FROM="postgres-alert@company.com"
+
+HOSTNAME=$(hostname)
+DATE=$(date '+%Y-%m-%d %H:%M:%S')
+
+# ---------------- File Configuration ----------------------
+
+SCRIPT_DIR="/var/tmp/pg_lag_monitor"
+
+STATE_FILE="$SCRIPT_DIR/consumer_alert_state.txt"
+MAIL_COUNT_FILE="$SCRIPT_DIR/mail_count.txt"
+
+TMPFILE="$SCRIPT_DIR/pg_lag_result.txt"
+HTMLFILE="$SCRIPT_DIR/pg_lag_alert.html"
+
+LOCKFILE="$SCRIPT_DIR/pg_lag_alert.lock"
+
+mkdir -p "$SCRIPT_DIR"
+
+# ---------------- Prevent Concurrent Execution ------------
+
+exec 200>"$LOCKFILE"
+
+if ! flock -n 200; then
+    echo "Another monitoring process is running."
+    exit 1
+fi
+
+# ---------------- Initialize State Files ------------------
+
+[ -f "$STATE_FILE" ] || touch "$STATE_FILE"
+
+[ -f "$MAIL_COUNT_FILE" ] || echo 0 > "$MAIL_COUNT_FILE"
+
+# ---------------- Load Existing Alert History --------------
+
+declare -A LAST_ALERT_LAG
+
+while IFS='|' read -r consumer last_lag count
+do
+
+    [ -z "$consumer" ] && continue
+
+    LAST_ALERT_LAG["$consumer"]=$last_lag
+
+done < "$STATE_FILE"
+
+# ---------------- Execute PostgreSQL Query ----------------
+
+psql -h "$PGHOST" \
+     -p "$PGPORT" \
+     -U "$PGUSER" \
+     -d "$PGDATABASE" \
+     -X -A -F '|' -t -v ON_ERROR_STOP=1 -c "
+
+     -- PLACE YOUR EXISTING SQL QUERY HERE
+
+     " > "$TMPFILE"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: PostgreSQL query execution failed."
+    exit 1
+fi
+
+# ---------------- Process Consumer Lag --------------------
+
+ALERT_DATA=""
+
+declare -A PENDING_LAG
+
+ALERT_FOUND=0
+
+while IFS='|' read -r consumer lag
+do
+
+    [ -z "$consumer" ] && continue
+
+    consumer=$(echo "$consumer" | xargs)
+    lag=$(echo "$lag" | xargs)
+
+    # Validate numeric lag
+    [[ "$lag" =~ ^[0-9]+$ ]] || continue
+
+    # Check threshold
+    [ "$lag" -lt "$THRESHOLD" ] && continue
+
+    LAST_LAG=${LAST_ALERT_LAG["$consumer"]:-0}
+
+    SEND_ALERT=0
+    ALERT_REASON=""
+
+    # Initial alert
+    if [ "$LAST_LAG" -eq 0 ]; then
+
+        SEND_ALERT=1
+        ALERT_REASON="Initial threshold exceeded"
+
+    # New alert for every additional 50K increase
+    elif [ "$lag" -ge $((LAST_LAG + INCREASE_LIMIT)) ]; then
+
+        SEND_ALERT=1
+        ALERT_REASON="Lag increased by 50K or more"
+
+    fi
+
+    # Prepare alert details
+    if [ "$SEND_ALERT" -eq 1 ]; then
+
+        ALERT_FOUND=1
+
+        ALERT_DATA+="
+        <tr>
+            <td>$consumer</td>
+            <td style='color:red;font-weight:bold;'>$lag</td>
+            <td style='color:red;font-weight:bold;'>CRITICAL</td>
+            <td>$ALERT_REASON</td>
+        </tr>
+        "
+
+        PENDING_LAG["$consumer"]=$lag
+
+    fi
+
+done < "$TMPFILE"
+
+# ---------------- Generate and Send HTML Email ------------
+
+if [ "$ALERT_FOUND" -eq 1 ]; then
+
+    CURRENT_MAIL_COUNT=$(cat "$MAIL_COUNT_FILE")
+    NEXT_MAIL_COUNT=$((CURRENT_MAIL_COUNT + 1))
+
+    cat > "$HTMLFILE" <<EOF
+<html>
+<head>
+<style>
+body {
+    font-family: Arial, sans-serif;
+    font-size: 13px;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+th {
+    background-color: #333333;
+    color: white;
+    padding: 10px;
+}
+
+td {
+    border: 1px solid #cccccc;
+    padding: 10px;
+}
+
+.alert {
+    color: red;
+    font-weight: bold;
+}
+</style>
+</head>
+
+<body>
+
+<h2 style="color:red;">
+CRITICAL - PostgreSQL Application Lag Alert
+</h2>
+
+<p>
+<b>Description:</b>
+Application consumer lag has exceeded the configured threshold.
+New alerts are generated for every additional 50,000 lag increase.
+Only one email is sent per alert level.
+</p>
+
+<p><b>Server:</b> $HOSTNAME</p>
+<p><b>Database:</b> $PGDATABASE</p>
+<p><b>Alert Threshold:</b> $THRESHOLD</p>
+<p><b>Alert Increment:</b> $INCREASE_LIMIT</p>
+<p><b>Alert Time:</b> $DATE</p>
+<p><b>Total Alert Emails:</b> $NEXT_MAIL_COUNT</p>
+
+<h3 style="color:red;">Consumer Lag Details</h3>
+
+<table>
+
+<tr>
+<th>Consumer Name</th>
+<th>Current Lag</th>
+<th>Status</th>
+<th>Alert Description</th>
+</tr>
+
+$ALERT_DATA
+
+</table>
+
+<p class="alert">
+Action Required: Please investigate the application consumer lag.
+</p>
+
+<p>
+Regards,<br>
+PostgreSQL Monitoring System
+</p>
+
+</body>
+</html>
+EOF
+
+    # ---------------- Send HTML Email ----------------------
+
+    {
+        echo "From: $MAIL_FROM"
+        echo "To: $MAIL_TO"
+        echo "Subject: CRITICAL - PostgreSQL Application Lag Alert"
+        echo "MIME-Version: 1.0"
+        echo "Content-Type: text/html; charset=UTF-8"
+        echo ""
+        cat "$HTMLFILE"
+
+    } | /usr/sbin/sendmail -t
+
+    if [ $? -eq 0 ]; then
+
+        # Update consumer alert history after email submission
+
+        for consumer in "${!PENDING_LAG[@]}"
+        do
+            LAST_ALERT_LAG["$consumer"]=${PENDING_LAG["$consumer"]}
+        done
+
+        # Save state file
+
+        STATE_TMP="$STATE_FILE.tmp"
+
+        : > "$STATE_TMP"
+
+        for consumer in "${!LAST_ALERT_LAG[@]}"
+        do
+            echo "$consumer|${LAST_ALERT_LAG[$consumer]}|1" \
+                >> "$STATE_TMP"
+        done
+
+        mv "$STATE_TMP" "$STATE_FILE"
+
+        # Update total email count
+
+        echo "$NEXT_MAIL_COUNT" > "$MAIL_COUNT_FILE"
+
+        echo "SUCCESS: Alert email sent."
+        echo "Total emails sent: $NEXT_MAIL_COUNT"
+
+    else
+
+        echo "ERROR: Email sending failed."
+        echo "Alert state not updated."
+
+        exit 1
+
+    fi
+
+else
+
+    echo "No new alert required."
+    echo "No additional 50K increase detected."
+
+fi
+
+# ---------------- Cleanup ---------------------------------
+
+rm -f "$TMPFILE" "$HTMLFILE"
+
+echo "Monitoring completed: $DATE"
+
+###############################################################################
+# END OF SCRIPT
+###############################################################################
