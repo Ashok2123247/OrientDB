@@ -56,3 +56,82 @@ for (const colName of cols) {
     print(`${colName}, ${idx.name}, ${indexType}, ${indexFields}`);
   }
 }
+
+
+
+
+
+
+
+
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEV_FILE="${1:-dev.csv}"
+QA_FILE="${2:-qa.csv}"
+INT_FILE="${3:-int.csv}"
+OUT_FILE="${4:-index_comparison.csv}"
+
+for f in "$DEV_FILE" "$QA_FILE" "$INT_FILE"; do
+  if [[ ! -f "$f" ]]; then
+    echo "Error: Input file not found: $f" >&2
+    exit 1
+  fi
+done
+
+python3 - "$DEV_FILE" "$QA_FILE" "$INT_FILE" "$OUT_FILE" <<'EOF'
+import csv
+import sys
+from collections import defaultdict
+
+dev_path, qa_path, int_path, out_path = sys.argv[1:5]
+
+def load_indexes(path):
+    # maps: collection -> { index_name: set_of_formatted_specs }
+    data = defaultdict(lambda: defaultdict(list))
+    with open(path, mode="r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f, skipinitialspace=True)
+        for row in reader:
+            col = (row.get("collection name") or "").strip()
+            idx_name = (row.get("index name") or "").strip()
+            idx_type = (row.get("index type") or "").strip()
+            idx_fields = (row.get("index fields") or "").strip()
+            if not col or not idx_name:
+                continue
+            spec = f"{idx_name} ({idx_type}: {idx_fields})" if (idx_type or idx_fields) else idx_name
+            data[col][idx_name].append(spec)
+    return data
+
+dev_data = load_indexes(dev_path)
+qa_data = load_indexes(qa_path)
+int_data = load_indexes(int_path)
+
+all_collections = sorted(set(dev_data) | set(qa_data) | set(int_data))
+
+def format_cell(col_map, idx_name):
+    entries = col_map.get(idx_name, [])
+    if not entries:
+        return "MISSING"
+    return " ; ".join(entries)
+
+# UTF-8 with BOM (utf-8-sig) ensures Excel opens special characters cleanly
+with open(out_path, mode="w", encoding="utf-8-sig", newline="") as out_f:
+    writer = csv.writer(out_f)
+    writer.writerow(["collection name", "QA index name", "DEV index name", "INT index name", "status"])
+
+    for col in all_collections:
+        all_indexes = sorted(
+            set(qa_data.get(col, {}))
+            | set(dev_data.get(col, {}))
+            | set(int_data.get(col, {}))
+        )
+        for idx in all_indexes:
+            qa_val = format_cell(qa_data.get(col, {}), idx)
+            dev_val = format_cell(dev_data.get(col, {}), idx)
+            int_val = format_cell(int_data.get(col, {}), idx)
+
+            status = "MATCH" if (qa_val == dev_val == int_val) else "DIFF"
+            writer.writerow([col, qa_val, dev_val, int_val, status])
+
+print(f"Comparison written to: {out_path}")
+EOF
