@@ -21,3 +21,38 @@ for (const colName of cols) {
     print(`${colName}, ${idx.name}, ${indexType}`);
   }
 }
+
+
+
+
+
+const cols = db.getCollectionNames().sort();
+
+print("collection name, index name, index type, index fields");
+print("=====================================================");
+
+function getIndexType(idx) {
+  if (idx.expireAfterSeconds !== undefined) return "ttl";
+  if (idx.unique) return "unique";
+  if (idx.textIndexVersion !== undefined || Object.values(idx.key).includes("text")) return "text";
+  if (idx["2dsphereIndexVersion"] !== undefined || Object.values(idx.key).includes("2dsphere")) return "2dsphere";
+  if (Object.values(idx.key).includes("hashed")) return "hashed";
+  if (Object.keys(idx.key).some(k => k.includes("$**"))) return "wildcard";
+  if (Object.keys(idx.key).length > 1) return "compound";
+  return "normal";
+}
+
+function formatIndexFields(keyObj) {
+  return Object.entries(keyObj)
+    .map(([field, dir]) => `${field}: ${dir}`)
+    .join(" | ");
+}
+
+for (const colName of cols) {
+  const indexes = db.getCollection(colName).getIndexes();
+  for (const idx of indexes) {
+    const indexType = getIndexType(idx);
+    const indexFields = formatIndexFields(idx.key);
+    print(`${colName}, ${idx.name}, ${indexType}, ${indexFields}`);
+  }
+}
