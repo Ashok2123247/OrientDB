@@ -1,56 +1,84 @@
+/* - Retrieves all indexes from the selected collection.
+- Excludes the default _id index.
+- Generates createIndex() commands.
+- Preserves index names, unique, sparse, TTL, partial filter, and other index options.
+- Generates a .js file that you can execute in the target environment.
+Source environment – generate_indexes.js */
 
-#!/bin/bash
 
-# MongoDB Server Details
-DEV_URI="mongodb://dev-server:27017"
-QA_URI="mongodb://qa-server:27017"
+// Select database and collection
+var dbName = "mydb";
+var collectionName = "users";
 
-DB_NAME="mydatabase"
+var coll = db.getSiblingDB(dbName).getCollection(collectionName);
 
-# Collections to compare
-COLLECTIONS=("users" "orders" "products")
+// Get all indexes
+var indexes = coll.getIndexes();
 
-# Output CSV file
-OUTPUT="index_comparison_$(date +%Y%m%d_%H%M%S).csv"
+// Output file content
+print("// Index creation script");
+print("use('" + dbName + "');");
+print("");
 
-echo "Collection,Server,Index_Count,Index_Size_MB,Index_Fields" > "$OUTPUT"
+indexes.forEach(function (index) {
 
-# Function to collect index details
-get_indexes()
-{
-    URI=$1
-    SERVER=$2
-    COLLECTION=$3
+    // Skip default _id index
+    if (index.name == "_id_") {
+        return;
+    }
 
-    mongosh "$URI/$DB_NAME" --quiet --eval '
-        var result = db.runCommand({collStats: "'"$COLLECTION"'"});
+    var options = Object.assign({}, index);
 
-        var indexes = db.getCollection("'"$COLLECTION"'").getIndexes();
+    // Remove key and namespace-related fields
+    delete options.v;
+    delete options.key;
+    delete options.ns;
 
-        var count = indexes.length;
-        var size = result.totalIndexSize || 0;
-        var fields = indexes.map(function(idx) {
-            return JSON.stringify(idx.key);
-        }).join(";");
+    print(
+        "db.getCollection('" + collectionName +
+        "').createIndex(" +
+        JSON.stringify(index.key) + ", " +
+        JSON.stringify(options) +
+        ");"
+    );
+});
 
-        print(count + "|" + (size / 1024 / 1024).toFixed(2) + "|" + fields);
-    '
-}
 
-# Compare collection indexes
-for COLLECTION in "${COLLECTIONS[@]}"
-do
 
-    echo "Processing collection: $COLLECTION"
+//bash script
+mongosh "mongodb://source-server:27017" --quiet generate_indexes.js > create_indexes.js
 
-    DEV_DATA=$(get_indexes "$DEV_URI" "DEV" "$COLLECTION")
-    QA_DATA=$(get_indexes "$QA_URI" "QA" "$COLLECTION")
 
-    echo "$COLLECTION,DEV,$(echo "$DEV_DATA" | tr '|' ',')" >> "$OUTPUT"
-    echo "$COLLECTION,QA,$(echo "$QA_DATA" | tr '|' ',')" >> "$OUTPUT"
+// execute only missing indexes in the target
+var dbName = "mydb";
+var collectionName = "users";
 
-done
+var targetColl = db.getSiblingDB(dbName)
+                   .getCollection(collectionName);
 
-echo " "
-echo "Index comparison completed."
-echo "Output file: $OUTPUT"
+var sourceIndexes = [
+    { key: { email: 1 }, name: "email_1", unique: true },
+    { key: { createdDate: -1 }, name: "createdDate_-1" }
+];
+
+var targetIndexes = targetColl.getIndexes();
+
+sourceIndexes.forEach(function (srcIndex) {
+
+    var exists = targetIndexes.some(function (tgtIndex) {
+        return tgtIndex.name == srcIndex.name &&
+               JSON.stringify(tgtIndex.key) ==
+               JSON.stringify(srcIndex.key);
+    });
+
+    if (!exists) {
+        var options = Object.assign({}, srcIndex);
+        delete options.key;
+
+        targetColl.createIndex(srcIndex.key, options);
+
+        print("Created index: " + srcIndex.name);
+    } else {
+        print("Index already exists: " + srcIndex.name);
+    }
+});
