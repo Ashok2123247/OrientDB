@@ -1,0 +1,56 @@
+
+#!/bin/bash
+
+# MongoDB Server Details
+DEV_URI="mongodb://dev-server:27017"
+QA_URI="mongodb://qa-server:27017"
+
+DB_NAME="mydatabase"
+
+# Collections to compare
+COLLECTIONS=("users" "orders" "products")
+
+# Output CSV file
+OUTPUT="index_comparison_$(date +%Y%m%d_%H%M%S).csv"
+
+echo "Collection,Server,Index_Count,Index_Size_MB,Index_Fields" > "$OUTPUT"
+
+# Function to collect index details
+get_indexes()
+{
+    URI=$1
+    SERVER=$2
+    COLLECTION=$3
+
+    mongosh "$URI/$DB_NAME" --quiet --eval '
+        var result = db.runCommand({collStats: "'"$COLLECTION"'"});
+
+        var indexes = db.getCollection("'"$COLLECTION"'").getIndexes();
+
+        var count = indexes.length;
+        var size = result.totalIndexSize || 0;
+        var fields = indexes.map(function(idx) {
+            return JSON.stringify(idx.key);
+        }).join(";");
+
+        print(count + "|" + (size / 1024 / 1024).toFixed(2) + "|" + fields);
+    '
+}
+
+# Compare collection indexes
+for COLLECTION in "${COLLECTIONS[@]}"
+do
+
+    echo "Processing collection: $COLLECTION"
+
+    DEV_DATA=$(get_indexes "$DEV_URI" "DEV" "$COLLECTION")
+    QA_DATA=$(get_indexes "$QA_URI" "QA" "$COLLECTION")
+
+    echo "$COLLECTION,DEV,$(echo "$DEV_DATA" | tr '|' ',')" >> "$OUTPUT"
+    echo "$COLLECTION,QA,$(echo "$QA_DATA" | tr '|' ',')" >> "$OUTPUT"
+
+done
+
+echo " "
+echo "Index comparison completed."
+echo "Output file: $OUTPUT"
